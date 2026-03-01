@@ -1,0 +1,5 @@
+DEV_SETUP.md
+ai-python/.env.sample
+docker-compose.yml
+backend-golang/.env.sample
+frontend-nextjs/.env.sample
