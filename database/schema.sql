@@ -223,7 +223,9 @@ CREATE TABLE attendance_logs (
 CREATE INDEX idx_attendance_logs_tenant_id ON attendance_logs(tenant_id);
 CREATE INDEX idx_attendance_logs_user_id ON attendance_logs(user_id);
 CREATE INDEX idx_attendance_logs_punch_time ON attendance_logs(tenant_id, user_id, punch_time DESC);
-CREATE INDEX idx_attendance_logs_date_range ON attendance_logs(tenant_id, punch_time) WHERE punch_time >= NOW() - INTERVAL '1 year';
+-- Partial index using non-immutable function removed because Postgres requires
+-- index predicates to be IMMUTABLE. Use a regular index or BRIN for date ranges.
+CREATE INDEX idx_attendance_logs_date_range ON attendance_logs(tenant_id, punch_time);
 CREATE INDEX idx_attendance_logs_kiosk_id ON attendance_logs(kiosk_id);
 
 -- ============================================================================
