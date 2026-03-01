@@ -1,0 +1,29 @@
+# Enterprise Attendance AI Microservice Dependencies
+
+# FastAPI and Server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
+# Face Recognition & Computer Vision
+deepface==0.0.79
+opencv-python==4.8.1.78
+Pillow==10.1.0
+numpy==1.24.3
+
+# Machine Learning
+tensorflow==2.15.0
+scikit-learn==1.3.2
+
+# Encryption
+cryptography==41.0.7
+
+# Utilities
+python-dotenv==1.0.0
+
