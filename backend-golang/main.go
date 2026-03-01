@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,10 +44,10 @@ func main() {
 
 	// Initialize services
 	authService := services.NewAuthService(cfg.JWTSecret, cfg.JWTExpiry)
-	attendanceService := services.NewAttendanceService(db, mqttClient, cfg.AIServiceURL, cfg.AIServiceAPIKey)
-	userService := services.NewUserService(db)
-	hrmsService := services.NewHRMSService(db)
-	auditService := services.NewAuditService(db)
+	attendanceService := services.NewAttendanceService(db.Pool, mqttClient, cfg.AIServiceURL, cfg.AIServiceAPIKey)
+	userService := services.NewUserService(db.Pool)
+	hrmsService := services.NewHRMSService(db.Pool)
+	auditService := services.NewAuditService(db.Pool)
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
@@ -63,7 +64,7 @@ func main() {
 		Format: "[${time}] ${status} - ${latency} ${method} ${path}\n",
 	}))
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     cfg.CORSOrigins,
+		AllowOrigins:     strings.Join(cfg.CORSOrigins, ","),
 		AllowCredentials: true,
 		AllowMethods:     "GET,POST,PUT,DELETE,PATCH,OPTIONS",
 		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,X-API-Key,X-Tenant-ID,X-Kiosk-Code",
@@ -89,8 +90,8 @@ func main() {
 	}()
 
 	// Start server
-	log.Printf("Server starting on %s", cfg.Port)
-	if err := app.Listen(cfg.Port); err != nil {
+	log.Printf("Server starting on :%s", cfg.Port)
+	if err := app.Listen(":" + cfg.Port); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }

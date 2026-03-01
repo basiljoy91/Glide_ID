@@ -103,6 +103,7 @@ func (s *UserService) ListUsers(ctx context.Context, tenantID string, limit, off
 func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*models.User, error) {
 	// If tenantID is empty, search across all tenants (for login)
 	if tenantID == "" {
+		user := &models.User{}
 		err := s.db.QueryRow(ctx, `
 			SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
 				department_id, designation, date_of_joining, shift_start_time, shift_end_time,

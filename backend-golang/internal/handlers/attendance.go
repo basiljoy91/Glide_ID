@@ -43,7 +43,13 @@ func CheckIn(svc *services.AttendanceService) fiber.Handler {
 func ListAttendance(svc *services.AttendanceService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
-		// Implementation for listing attendance
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Tenant ID not found",
+			})
+		}
+
+		// TODO: Implement listing attendance records for this tenant
 		return c.JSON(fiber.Map{"message": "Not implemented"})
 	}
 }

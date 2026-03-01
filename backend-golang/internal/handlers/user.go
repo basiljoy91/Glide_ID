@@ -29,9 +29,11 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		}
 
 		// Log audit
+		tenantUUID := uuid.MustParse(tenantID)
+		userUUID := uuid.MustParse(userID)
 		auditSvc.LogAction(c.Context(), &models.AuditLog{
-			TenantID:     &uuid.MustParse(tenantID),
-			UserID:       &uuid.MustParse(userID),
+			TenantID:     &tenantUUID,
+			UserID:       &userUUID,
 			TargetUserID: &user.ID,
 			Action:       "user_created",
 			ResourceType:  stringPtr("user"),
@@ -96,13 +98,16 @@ func DeleteUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 
 		// Soft delete user
 		// Log audit
+		tenantUUID := uuid.MustParse(tenantID)
+		userUUID := uuid.MustParse(userID)
+		targetUUID := uuid.MustParse(targetUserID)
 		auditSvc.LogAction(c.Context(), &models.AuditLog{
-			TenantID:     &uuid.MustParse(tenantID),
-			UserID:       &uuid.MustParse(userID),
-			TargetUserID: &uuid.MustParse(targetUserID),
+			TenantID:     &tenantUUID,
+			UserID:       &userUUID,
+			TargetUserID: &targetUUID,
 			Action:       "user_deleted",
 			ResourceType:  stringPtr("user"),
-			ResourceID:   &uuid.MustParse(targetUserID),
+			ResourceID:   &targetUUID,
 			IPAddress:    stringPtr(c.IP()),
 			UserAgent:    stringPtr(c.Get("User-Agent")),
 		})
