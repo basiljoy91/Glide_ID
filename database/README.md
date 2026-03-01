@@ -101,11 +101,19 @@ Execute `schema.sql` in the Supabase SQL editor or via psql:
 psql -h <supabase-host> -U postgres -d postgres -f schema.sql
 ```
 
-### 3. Configure JWT Claims
+### 3. Configure Supabase Auth Integration
 
-In Supabase Dashboard → Authentication → Settings:
-- Add custom claims: `tenant_id`, `user_id`, `role`
-- Configure RLS to use these claims
+**Important**: Supabase doesn't have a UI for custom claims. Instead, run the migration files:
+
+1. Run `migrations/001_supabase_auth_integration.sql` - Sets up auth hooks
+2. Run `migrations/002_update_rls_for_supabase.sql` - Updates RLS policies
+
+These migrations create database functions that:
+- Automatically link Supabase auth users to your custom `users` table
+- Extract `tenant_id`, `user_id`, and `role` from auth metadata
+- Work with both Supabase auth and custom JWT tokens
+
+See `SETUP_GUIDE.md` for detailed step-by-step instructions.
 
 ### 4. Application Configuration
 
