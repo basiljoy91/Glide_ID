@@ -415,3 +415,4 @@ Implement user creation endpoint or use a migration script.
 
 **Congratulations!** Your Enterprise Attendance System is now set up and running locally. 🎉
 
+

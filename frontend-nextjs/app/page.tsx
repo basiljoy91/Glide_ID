@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation'
 
 export default function Home() {
-  // Redirect to appropriate page based on authentication
-  redirect('/dashboard')
+  // For now, show landing page
+  // Later: Check auth and redirect accordingly
+  redirect('/landing')
 }
 

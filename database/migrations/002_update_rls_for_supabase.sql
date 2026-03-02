@@ -391,3 +391,4 @@ CREATE POLICY "system_update_offline_queue" ON offline_queue
 -- 5. The is_super_admin() function checks both auth metadata and session variables
 -- ============================================================================
 
+

@@ -9,7 +9,7 @@ interface OfflineQueueItem {
   encryptedPayload: string
   timestamp: number
   monotonicOffset: number
-  synced: boolean
+  synced: 0 | 1
   retryCount: number
 }
 
@@ -17,7 +17,7 @@ interface AttendanceDB extends DBSchema {
   queue: {
     key: string
     value: OfflineQueueItem
-    indexes: { 'by-synced': boolean; 'by-timestamp': number }
+    indexes: { 'by-synced': 0 | 1; 'by-timestamp': number }
   }
 }
 
@@ -74,7 +74,7 @@ class OfflineQueue {
       }),
       timestamp: Date.now(),
       monotonicOffset,
-      synced: false,
+      synced: 0,
       retryCount: 0,
     }
 
@@ -86,7 +86,7 @@ class OfflineQueue {
   async getUnsyncedItems(): Promise<OfflineQueueItem[]> {
     const db = await this.init()
     const index = db.transaction('queue').store.index('by-synced')
-    return index.getAll(false)
+    return index.getAll(0)
   }
 
   // Mark item as synced
@@ -94,7 +94,7 @@ class OfflineQueue {
     const db = await this.init()
     const item = await db.get('queue', id)
     if (item) {
-      item.synced = true
+      item.synced = 1
       await db.put('queue', item)
     }
   }
@@ -118,7 +118,7 @@ class OfflineQueue {
     const allItems = await index.getAll()
     
     for (const item of allItems) {
-      if (item.synced && item.timestamp < sevenDaysAgo) {
+      if (item.synced === 1 && item.timestamp < sevenDaysAgo) {
         await db.delete('queue', item.id)
       }
     }
@@ -172,7 +172,7 @@ class OfflineQueue {
   async getStats() {
     const db = await this.init()
     const allItems = await db.getAll('queue')
-    const unsynced = allItems.filter(item => !item.synced)
+    const unsynced = allItems.filter(item => item.synced === 0)
     
     return {
       total: allItems.length,

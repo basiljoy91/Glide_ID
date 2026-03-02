@@ -105,7 +105,7 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 	if tenantID == "" {
 		user := &models.User{}
 		err := s.db.QueryRow(ctx, `
-			SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
+			SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
 				department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 				shift_length_hours, role, is_active, data_privacy_consent, consent_date,
 				last_login_at, created_at, updated_at, deleted_at
@@ -113,7 +113,7 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 			WHERE email = $1 AND deleted_at IS NULL
 			LIMIT 1
 		`, email).Scan(
-			&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.Phone,
+			&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.PasswordHash, &user.Phone,
 			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
@@ -128,14 +128,14 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 	// Otherwise, search within specific tenant
 	user := &models.User{}
 	err := s.db.QueryRow(ctx, `
-		SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
+		SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
 			last_login_at, created_at, updated_at, deleted_at
 		FROM users
 		WHERE email = $1 AND tenant_id = $2 AND deleted_at IS NULL
 	`, email, tenantID).Scan(
-		&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.Phone,
+		&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.PasswordHash, &user.Phone,
 		&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 		&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 		&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,

@@ -91,7 +91,7 @@ export default function KioskPage() {
           <button
             onClick={() => {
               // PIN fallback option
-              toast.info('PIN fallback not implemented in this demo')
+              toast('PIN fallback not implemented in this demo')
             }}
             className="text-sm text-muted-foreground hover:text-foreground underline"
           >

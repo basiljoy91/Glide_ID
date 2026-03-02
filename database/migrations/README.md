@@ -95,3 +95,4 @@ To rollback a migration:
 2. Or manually reverse the changes in SQL Editor
 3. Always test rollbacks on a development database first
 
+

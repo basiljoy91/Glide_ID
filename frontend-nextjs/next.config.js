@@ -5,10 +5,6 @@ const nextConfig = {
   images: {
     domains: [],
   },
-  // PWA Configuration
-  experimental: {
-    appDir: true,
-  },
 }
 
 module.exports = nextConfig

@@ -322,3 +322,4 @@ If you encounter issues:
 3. Check project GitHub issues
 4. Contact Supabase support for platform-specific issues
 
+

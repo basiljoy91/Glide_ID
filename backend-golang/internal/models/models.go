@@ -12,6 +12,7 @@ type User struct {
 	TenantID          uuid.UUID `json:"tenant_id"`
 	EmployeeID        string    `json:"employee_id"`
 	Email             string    `json:"email"`
+	PasswordHash      *string   `json:"-"` // for password auth only; never expose
 	Phone             *string   `json:"phone"`
 	FirstName         string    `json:"first_name"`
 	LastName          string    `json:"last_name"`

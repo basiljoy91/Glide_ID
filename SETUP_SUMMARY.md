@@ -185,3 +185,4 @@ Before proceeding to production:
 
 **You're all set!** Follow the steps above to complete your setup. The custom claims issue is now solved through the migration files. 🎉
 
+
