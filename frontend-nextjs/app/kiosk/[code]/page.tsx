@@ -8,6 +8,7 @@ import { useKioskStore } from '@/store/useStore'
 import toast from 'react-hot-toast'
 import { config } from '@/lib/config'
 import { hmacSha256Hex } from '@/lib/crypto'
+import { parseAndMapBiometricError } from '@/lib/biometric-errors'
 
 export default function KioskPage() {
   const params = useParams()
@@ -24,6 +25,7 @@ export default function KioskPage() {
 
   const handleCapture = async (imageData: string) => {
     try {
+      let directFailureMessage: string | null = null
       if (!hasConsented) {
         toast.error('Please accept the data privacy notice before continuing.')
         return
@@ -64,17 +66,33 @@ export default function KioskPage() {
             toast.success(data.message || 'Check-in successful!')
             return
           }
+          const err = await response.json().catch(() => ({}))
+          directFailureMessage = parseAndMapBiometricError(err, 'Live check-in failed')
+          throw new Error(directFailureMessage)
         } catch (error) {
           console.error('Direct send failed, adding to queue:', error)
+          directFailureMessage = parseAndMapBiometricError(
+            error instanceof Error ? error.message : error,
+            'Live check-in failed'
+          )
         }
       }
 
       // Add to offline queue
+      const canUseOfflineEncryption = Boolean(config.publicKey && globalThis.crypto?.subtle)
+      if (!canUseOfflineEncryption) {
+        throw new Error('Offline mode is not configured on this kiosk device')
+      }
+
       await addToQueue('check_in', imageData, monotonicOffset + networkOffset)
-      toast.success('Saved offline. Will sync when connection is restored.')
+      if (directFailureMessage) {
+        toast.success(`${directFailureMessage} Saved offline and will sync when connection is restored.`)
+      } else {
+        toast.success('Saved offline. Will sync when connection is restored.')
+      }
     } catch (error: any) {
       console.error('Check-in error:', error)
-      toast.error(error.message || 'Failed to process check-in')
+      toast.error(parseAndMapBiometricError(error?.message, 'Failed to process check-in'))
     }
   }
 
@@ -134,7 +152,7 @@ export default function KioskPage() {
           <FaceCamera
             onCapture={handleCapture}
             livenessType="passive"
-            showFlashlight={true}
+            showFlashlight={false}
           />
         )}
 

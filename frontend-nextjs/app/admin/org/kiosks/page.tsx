@@ -86,6 +86,43 @@ export default function OrgKiosksPage() {
     }
   }
 
+  const handleRotateSecret = async (id: string, code: string) => {
+    if (!confirm(`Rotate HMAC secret for kiosk ${code}? Existing kiosk clients must be updated.`)) return
+    try {
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/kiosks/${id}/rotate-secret`,
+        {
+          method: 'POST',
+          headers,
+        }
+      )
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to rotate kiosk secret')
+      }
+
+      const secret = data.hmac_secret as string | undefined
+      if (!secret) {
+        throw new Error('Secret rotation succeeded but no secret was returned')
+      }
+
+      try {
+        await navigator.clipboard.writeText(secret)
+        toast.success('New kiosk secret generated and copied to clipboard')
+      } catch {
+        toast.success('New kiosk secret generated')
+      }
+
+      window.alert(
+        `Kiosk ${code} new HMAC secret (save this now):\n\n${secret}\n\nThis value is shown only now.`
+      )
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to rotate kiosk secret')
+    }
+  }
+
   const isHealthy = (k: Kiosk) => {
     if (!k.last_heartbeat_at) return false
     const t = new Date(k.last_heartbeat_at).getTime()
@@ -176,14 +213,23 @@ export default function OrgKiosksPage() {
                   </td>
                   <td className="px-4 py-2 text-right">
                     {k.status === 'active' && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleRevoke(k.id)}
-                        className="text-destructive hover:text-destructive/80"
-                      >
-                        Revoke
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRotateSecret(k.id, k.code)}
+                        >
+                          Rotate Secret
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRevoke(k.id)}
+                          className="text-destructive hover:text-destructive/80"
+                        >
+                          Revoke
+                        </Button>
+                      </div>
                     )}
                   </td>
                 </tr>

@@ -28,7 +28,7 @@ class OfflineQueue {
   private cachedCryptoKey: CryptoKey | null = null
 
   constructor() {
-    this.publicKey = config.publicKey || ''
+    this.publicKey = (config.publicKey || '').replace(/\\n/g, '\n').trim()
   }
 
   async init() {

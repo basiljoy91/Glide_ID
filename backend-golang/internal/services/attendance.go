@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -25,10 +26,10 @@ import (
 )
 
 type AttendanceService struct {
-	db              *pgxpool.Pool
-	mqttClient      MQTTClient
-	aiServiceURL    string
-	aiServiceAPIKey string
+	db                *pgxpool.Pool
+	mqttClient        MQTTClient
+	aiServiceURL      string
+	aiServiceAPIKey   string
 	offlinePrivateKey *rsa.PrivateKey
 }
 
@@ -49,10 +50,10 @@ func NewAttendanceService(db *pgxpool.Pool, mqttClient MQTTClient, aiServiceURL,
 		}
 	}
 	return &AttendanceService{
-		db:              db,
-		mqttClient:      mqttClient,
-		aiServiceURL:    aiServiceURL,
-		aiServiceAPIKey: aiServiceAPIKey,
+		db:                db,
+		mqttClient:        mqttClient,
+		aiServiceURL:      aiServiceURL,
+		aiServiceAPIKey:   aiServiceAPIKey,
 		offlinePrivateKey: pk,
 	}
 }
@@ -170,9 +171,9 @@ func (s *AttendanceService) VectorizeAndStore(ctx context.Context, tenantID, use
 		return fmt.Errorf("image_base64 is required")
 	}
 	payload := map[string]interface{}{
-		"user_id":      userID,
-		"tenant_id":    tenantID,
-		"image_base64": imageBase64,
+		"user_id":         userID,
+		"tenant_id":       tenantID,
+		"image_base64":    imageBase64,
 		"update_existing": false,
 	}
 	jsonData, _ := json.Marshal(payload)
@@ -193,6 +194,11 @@ func (s *AttendanceService) VectorizeAndStore(ctx context.Context, tenantID, use
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		msg := strings.TrimSpace(string(body))
+		if msg != "" {
+			return fmt.Errorf("AI service responded with %d: %s", resp.StatusCode, msg)
+		}
 		return fmt.Errorf("AI service responded with %d", resp.StatusCode)
 	}
 	return nil
@@ -200,26 +206,26 @@ func (s *AttendanceService) VectorizeAndStore(ctx context.Context, tenantID, use
 
 // CheckInRequest represents a check-in request from kiosk
 type CheckInRequest struct {
-	ImageBase64      string  `json:"image_base64"`
-	KioskCode       string  `json:"kiosk_code"`
-	LocalTime       *string `json:"local_time"`
-	MonotonicOffsetMs *int64 `json:"monotonic_offset_ms"`
-	VerificationMethod string `json:"verification_method"` // "biometric", "pin"
-	PinCode         *string `json:"pin_code"`
-	IPAddress       *string `json:"ip_address"`
-	HasConsented    *bool   `json:"has_consented"`
+	ImageBase64        string  `json:"image_base64"`
+	KioskCode          string  `json:"kiosk_code"`
+	LocalTime          *string `json:"local_time"`
+	MonotonicOffsetMs  *int64  `json:"monotonic_offset_ms"`
+	VerificationMethod string  `json:"verification_method"` // "biometric", "pin"
+	PinCode            *string `json:"pin_code"`
+	IPAddress          *string `json:"ip_address"`
+	HasConsented       *bool   `json:"has_consented"`
 }
 
 // CheckInResponse represents the response
 type CheckInResponse struct {
-	Success         bool      `json:"success"`
-	UserID          *string   `json:"user_id"`
-	UserName        *string   `json:"user_name"`
-	Confidence      *float64  `json:"confidence"`
-	PunchTime       time.Time `json:"punch_time"`
-	Status          string    `json:"status"` // "check_in" or "check_out"
-	DoorOpened      bool      `json:"door_opened"`
-	Message         string    `json:"message"`
+	Success    bool      `json:"success"`
+	UserID     *string   `json:"user_id"`
+	UserName   *string   `json:"user_name"`
+	Confidence *float64  `json:"confidence"`
+	PunchTime  time.Time `json:"punch_time"`
+	Status     string    `json:"status"` // "check_in" or "check_out"
+	DoorOpened bool      `json:"door_opened"`
+	Message    string    `json:"message"`
 }
 
 // ProcessCheckIn processes a check-in/check-out request
@@ -331,17 +337,17 @@ func (s *AttendanceService) processBiometricCheckIn(
 
 	// Create attendance log
 	attendanceLog := models.AttendanceLog{
-		ID:                 uuid.New(),
-		TenantID:           uuid.MustParse(tenantID),
-		UserID:             uuid.MustParse(userID),
-		KioskID:            &kioskID,
-		Status:             status,
-		PunchTime:          punchTime,
+		ID:                  uuid.New(),
+		TenantID:            uuid.MustParse(tenantID),
+		UserID:              uuid.MustParse(userID),
+		KioskID:             &kioskID,
+		Status:              status,
+		PunchTime:           punchTime,
 		FaceMatchConfidence: &confidence,
-		VerificationMethod: "biometric",
-		IPAddress:          req.IPAddress,
-		CreatedAt:          time.Now(),
-		UpdatedAt:          time.Now(),
+		VerificationMethod:  "biometric",
+		IPAddress:           req.IPAddress,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
 	}
 
 	// Insert attendance log
@@ -373,9 +379,9 @@ func (s *AttendanceService) processBiometricCheckIn(
 	doorOpened := false
 	if s.mqttClient != nil && mqttTopic != nil {
 		doorPayload := map[string]interface{}{
-			"action":   "open",
-			"user_id":  userID,
-			"kiosk_id": kioskID.String(),
+			"action":    "open",
+			"user_id":   userID,
+			"kiosk_id":  kioskID.String(),
 			"timestamp": time.Now().Unix(),
 		}
 		doorJSON, _ := json.Marshal(doorPayload)
@@ -425,7 +431,7 @@ func (s *AttendanceService) processPinCheckIn(
 	// Lightweight face detection for buddy punching prevention
 	// Call AI service for liveness detection only
 	aiReq := map[string]interface{}{
-		"image_base64": req.ImageBase64,
+		"image_base64":  req.ImageBase64,
 		"liveness_type": "passive",
 	}
 
@@ -490,9 +496,9 @@ func (s *AttendanceService) processPinCheckIn(
 	doorOpened := false
 	if s.mqttClient != nil && mqttTopic != nil && !anomalyDetected {
 		doorPayload := map[string]interface{}{
-			"action":   "open",
-			"user_id":  userID.String(),
-			"kiosk_id": kioskID.String(),
+			"action":    "open",
+			"user_id":   userID.String(),
+			"kiosk_id":  kioskID.String(),
 			"timestamp": time.Now().Unix(),
 		}
 		doorJSON, _ := json.Marshal(doorPayload)
@@ -542,4 +548,3 @@ func (s *AttendanceService) determineAttendanceStatus(ctx context.Context, userI
 
 	return "check_in"
 }
-

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -15,6 +16,11 @@ import (
 // HMACAuth middleware verifies HMAC signatures for kiosk requests
 func HMACAuth(db *pgxpool.Pool, maxSkewSeconds int) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		path := c.Path()
+		if path != "/api/v1/kiosk" && !strings.HasPrefix(path, "/api/v1/kiosk/") {
+			return c.Next()
+		}
+
 		// Get kiosk code from header
 		kioskCode := c.Get("X-Kiosk-Code")
 		if kioskCode == "" {

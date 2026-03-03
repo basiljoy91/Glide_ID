@@ -88,6 +88,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		{
 			kiosks.Get("/", handlers.ListKiosks(svc.Attendance.GetDB()))
 			kiosks.Post("/", handlers.CreateKiosk(svc.Attendance.GetDB()))
+			kiosks.Post("/:id/rotate-secret", handlers.RotateKioskSecret(svc.Attendance.GetDB()))
 			kiosks.Put("/:id", handlers.UpdateKiosk(svc.Attendance.GetDB()))
 			kiosks.Delete("/:id", handlers.RevokeKiosk(svc.Attendance.GetDB()))
 		}

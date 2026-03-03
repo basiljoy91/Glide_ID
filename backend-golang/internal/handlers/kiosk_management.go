@@ -44,7 +44,7 @@ func ListKiosks(db *pgxpool.Pool) fiber.Handler {
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		_, _ = tx.Exec(ctx, "SET LOCAL app.current_tenant_id = $1", tenantID)
+		_, _ = tx.Exec(ctx, "SELECT set_config('app.current_tenant_id', $1, true)", tenantID)
 
 		baseSQL := `
 			SELECT id, name, code, status, last_heartbeat_at, created_at, updated_at
@@ -107,7 +107,7 @@ func CreateKiosk(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to open transaction"})
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		_, _ = tx.Exec(ctx, "SET LOCAL app.current_tenant_id = $1", tenantID)
+		_, _ = tx.Exec(ctx, "SELECT set_config('app.current_tenant_id', $1, true)", tenantID)
 
 		var k kioskDTO
 		err = tx.QueryRow(ctx, `
@@ -164,7 +164,7 @@ func UpdateKiosk(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to open transaction"})
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		_, _ = tx.Exec(ctx, "SET LOCAL app.current_tenant_id = $1", tenantID)
+		_, _ = tx.Exec(ctx, "SELECT set_config('app.current_tenant_id', $1, true)", tenantID)
 
 		var k kioskDTO
 		err = tx.QueryRow(ctx, `
@@ -205,7 +205,7 @@ func RevokeKiosk(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to open transaction"})
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		_, _ = tx.Exec(ctx, "SET LOCAL app.current_tenant_id = $1", tenantID)
+		_, _ = tx.Exec(ctx, "SELECT set_config('app.current_tenant_id', $1, true)", tenantID)
 
 		_, err = tx.Exec(ctx, `
 			UPDATE kiosks
@@ -220,6 +220,53 @@ func RevokeKiosk(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize revoke kiosk"})
 		}
 		return c.JSON(fiber.Map{"success": true})
+	}
+}
+
+// RotateKioskSecret rotates the kiosk HMAC secret and returns the new value once.
+func RotateKioskSecret(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		kioskID := c.Params("id")
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		newSecret, err := generateSecretHex(32)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to generate kiosk secret"})
+		}
+
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to open transaction"})
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		_, _ = tx.Exec(ctx, "SELECT set_config('app.current_tenant_id', $1, true)", tenantID)
+
+		var kioskCode string
+		err = tx.QueryRow(ctx, `
+			UPDATE kiosks
+			SET hmac_secret = $1, updated_at = NOW()
+			WHERE id = $2 AND tenant_id = $3
+			RETURNING code
+		`, newSecret, kioskID, tenantID).Scan(&kioskCode)
+		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kiosk not found"})
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize secret rotation"})
+		}
+
+		return c.JSON(fiber.Map{
+			"success":     true,
+			"kiosk_id":    kioskID,
+			"kiosk_code":  kioskCode,
+			"hmac_secret": newSecret,
+		})
 	}
 }
 

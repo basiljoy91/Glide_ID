@@ -45,21 +45,53 @@ class FaceRecognitionService:
             elif img_array.shape[2] == 4:  # RGBA
                 img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
             
-            # Extract embedding using DeepFace
-            embedding = DeepFace.represent(
-                img_path=img_array,
-                model_name=self.model_name,
-                detector_backend=self.detector,
-                enforce_detection=True,
-                align=True
-            )
-            
-            if not embedding:
+            def _extract_from_result(result) -> Optional[np.ndarray]:
+                if not result:
+                    return None
+                if isinstance(result, list):
+                    payload = result[0] if result else None
+                elif isinstance(result, dict):
+                    payload = result
+                else:
+                    payload = None
+
+                if not payload or 'embedding' not in payload:
+                    return None
+                return np.array(payload['embedding'], dtype=np.float32)
+
+            vector: Optional[np.ndarray] = None
+            try:
+                embedding = DeepFace.represent(
+                    img_path=img_array,
+                    model_name=self.model_name,
+                    detector_backend=self.detector,
+                    enforce_detection=True,
+                    align=True
+                )
+                vector = _extract_from_result(embedding)
+            except Exception as detection_error:
+                detection_message = str(detection_error).lower()
+                no_face_signals = [
+                    "face could not be detected",
+                    "face cannot be detected",
+                    "could not detect face",
+                    "enforce_detection"
+                ]
+                if any(signal in detection_message for signal in no_face_signals):
+                    # Fallback: allow DeepFace to derive an embedding from the best-effort crop
+                    embedding = DeepFace.represent(
+                        img_path=img_array,
+                        model_name=self.model_name,
+                        detector_backend=self.detector,
+                        enforce_detection=False,
+                        align=True
+                    )
+                    vector = _extract_from_result(embedding)
+                else:
+                    raise
+
+            if vector is None:
                 return None, 0.0
-            
-            # DeepFace returns a list of dictionaries
-            # Each dict has 'embedding' key with the vector
-            vector = np.array(embedding[0]['embedding'], dtype=np.float32)
             
             # Calculate confidence (normalize to 0-1)
             # DeepFace doesn't provide explicit confidence, so we use a heuristic
@@ -69,10 +101,12 @@ class FaceRecognitionService:
             
         except ValueError as e:
             # No face detected
-            if "Face could not be detected" in str(e):
+            if "face could not be detected" in str(e).lower():
                 return None, 0.0
             raise
         except Exception as e:
+            if "face could not be detected" in str(e).lower():
+                return None, 0.0
             raise Exception(f"Face extraction failed: {str(e)}")
     
     async def detect_liveness(

@@ -2,9 +2,9 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
-	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -18,9 +18,9 @@ type Config struct {
 	DatabaseURL string
 
 	// JWT Authentication
-	JWTSecret  string
-	JWTExpiry  time.Duration
-	JWTIssuer  string
+	JWTSecret string
+	JWTExpiry time.Duration
+	JWTIssuer string
 
 	// SSO Configuration
 	SSOProvider     string // "saml", "oidc", "google", "azure"
@@ -46,7 +46,7 @@ type Config struct {
 	EncryptionKey string
 
 	// HMAC for Kiosk
-	KioskHMACSecret string
+	KioskHMACSecret    string
 	HMACMaxSkewSeconds int
 
 	// Offline encryption (private key used server-side to decrypt kiosk offline payloads)
@@ -66,9 +66,9 @@ func Load() *Config {
 
 		DatabaseURL: getEnv("DATABASE_URL", ""),
 
-		JWTSecret:  getEnv("JWT_SECRET", "change-me-in-production"),
-		JWTExpiry:  parseDuration(getEnv("JWT_EXPIRY", "24h")),
-		JWTIssuer:  getEnv("JWT_ISSUER", "enterprise-attendance-api"),
+		JWTSecret: getEnv("JWT_SECRET", "change-me-in-production"),
+		JWTExpiry: parseDuration(getEnv("JWT_EXPIRY", "24h")),
+		JWTIssuer: getEnv("JWT_ISSUER", "enterprise-attendance-api"),
 
 		SSOProvider:     getEnv("SSO_PROVIDER", ""),
 		SSOClientID:     getEnv("SSO_CLIENT_ID", ""),
@@ -77,7 +77,7 @@ func Load() *Config {
 		SSORedirectURL:  getEnv("SSO_REDIRECT_URL", ""),
 
 		AIServiceURL:    getEnv("AI_SERVICE_URL", "http://localhost:8000"),
-		AIServiceAPIKey:  getEnv("AI_SERVICE_API_KEY", ""),
+		AIServiceAPIKey: getEnv("AI_SERVICE_API_KEY", ""),
 
 		MQTTBrokerURL: getEnv("MQTT_BROKER_URL", ""),
 		MQTTClientID:  getEnv("MQTT_CLIENT_ID", "attendance-api"),
@@ -86,11 +86,11 @@ func Load() *Config {
 
 		CORSOrigins: parseCORSOrigins(getEnv("CORS_ORIGINS", "http://localhost:3000")),
 
-		EncryptionKey:   getEnv("ENCRYPTION_KEY", ""),
-		KioskHMACSecret: getEnv("KIOSK_HMAC_SECRET", ""),
+		EncryptionKey:      getEnv("ENCRYPTION_KEY", ""),
+		KioskHMACSecret:    getEnv("KIOSK_HMAC_SECRET", ""),
 		HMACMaxSkewSeconds: parseInt(getEnv("HMAC_MAX_SKEW_SECONDS", "300"), 300),
 
-		OfflinePrivateKeyPEM: getEnv("OFFLINE_PRIVATE_KEY_PEM", ""),
+		OfflinePrivateKeyPEM: strings.ReplaceAll(getEnv("OFFLINE_PRIVATE_KEY_PEM", ""), `\\n`, "\n"),
 
 		HRMSWebhookSecret: getEnv("HRMS_WEBHOOK_SECRET", ""),
 	}
@@ -132,4 +132,3 @@ func parseInt(s string, def int) int {
 	}
 	return n
 }
-

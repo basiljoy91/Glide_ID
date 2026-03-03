@@ -11,6 +11,10 @@ from typing import Optional, List
 import uvicorn
 import os
 from datetime import datetime
+import base64
+import binascii
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
 
 from config import settings
 from services.face_recognition import FaceRecognitionService
@@ -153,16 +157,35 @@ async def vectorize_face(
     - **update_existing**: If true, applies continuous learning to existing vector
     """
     try:
-        # Decode base64 image
-        import base64
-        from io import BytesIO
-        from PIL import Image
-        
         if not request.image_base64:
             raise HTTPException(status_code=400, detail="image_base64 is required")
-        
-        image_data = base64.b64decode(request.image_base64)
-        image = Image.open(BytesIO(image_data))
+
+        image_b64 = request.image_base64.strip()
+        if image_b64.startswith("data:") and "," in image_b64:
+            image_b64 = image_b64.split(",", 1)[1]
+
+        try:
+            image_data = base64.b64decode(image_b64, validate=True)
+        except binascii.Error:
+            try:
+                image_data = base64.urlsafe_b64decode(image_b64 + "=" * (-len(image_b64) % 4))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid base64 image payload")
+
+        if not image_data:
+            raise HTTPException(status_code=400, detail="Empty image payload")
+
+        if len(image_data) > settings.MAX_IMAGE_SIZE_MB * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image exceeds max size of {settings.MAX_IMAGE_SIZE_MB}MB"
+            )
+
+        try:
+            image = Image.open(BytesIO(image_data))
+            image.load()
+        except UnidentifiedImageError:
+            raise HTTPException(status_code=400, detail="Unsupported or invalid image format")
         
         # Convert to RGB if necessary
         if image.mode != 'RGB':

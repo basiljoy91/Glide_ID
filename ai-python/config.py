@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
+        "http://localhost:3001",
         "https://*.vercel.app",
         "https://*.onrender.com",
     ]

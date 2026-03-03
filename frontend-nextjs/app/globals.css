@@ -60,20 +60,20 @@
 
 /* Flashlight overlay for dark environments */
 .flashlight-overlay {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background: white;
-  z-index: 9998;
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.6) 100%);
+  z-index: 20;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.3s ease;
 }
 
 .flashlight-overlay.active {
-  opacity: 0.95;
+  opacity: 0.45;
 }
 
 /* Skeleton loader */

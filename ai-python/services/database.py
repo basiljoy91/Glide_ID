@@ -15,6 +15,16 @@ class DatabaseService:
     
     def __init__(self):
         self.pool: Optional[asyncpg.Pool] = None
+
+    async def _set_rls_context(self, conn: asyncpg.Connection, tenant_id: str):
+        await conn.execute(
+            "SELECT set_config('app.current_tenant_id', $1, true)",
+            tenant_id
+        )
+        await conn.execute(
+            "SELECT set_config('app.is_ai_service', $1, true)",
+            'true'
+        )
     
     async def connect(self):
         """Create connection pool"""
@@ -48,15 +58,7 @@ class DatabaseService:
             Encrypted vector bytes or None
         """
         async with self.pool.acquire() as conn:
-            # Set tenant context for RLS
-            await conn.execute(
-                "SET LOCAL app.current_tenant_id = $1",
-                tenant_id
-            )
-            await conn.execute(
-                "SET LOCAL app.is_ai_service = $1",
-                'true'
-            )
+            await self._set_rls_context(conn, tenant_id)
             
             row = await conn.fetchrow(
                 """
@@ -82,14 +84,7 @@ class DatabaseService:
     ):
         """Store encrypted face vector"""
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "SET LOCAL app.current_tenant_id = $1",
-                tenant_id
-            )
-            await conn.execute(
-                "SET LOCAL app.is_ai_service = $1",
-                'true'
-            )
+            await self._set_rls_context(conn, tenant_id)
             
             await conn.execute(
                 """
@@ -121,14 +116,7 @@ class DatabaseService:
     ):
         """Update existing face vector (for continuous learning)"""
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "SET LOCAL app.current_tenant_id = $1",
-                tenant_id
-            )
-            await conn.execute(
-                "SET LOCAL app.is_ai_service = $1",
-                'true'
-            )
+            await self._set_rls_context(conn, tenant_id)
             
             await conn.execute(
                 """
@@ -157,14 +145,7 @@ class DatabaseService:
             Dictionary mapping user_id -> encrypted_vector
         """
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "SET LOCAL app.current_tenant_id = $1",
-                tenant_id
-            )
-            await conn.execute(
-                "SET LOCAL app.is_ai_service = $1",
-                'true'
-            )
+            await self._set_rls_context(conn, tenant_id)
             
             rows = await conn.fetch(
                 """
@@ -187,14 +168,7 @@ class DatabaseService:
     ) -> Optional[Dict]:
         """Get user details for match response"""
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "SET LOCAL app.current_tenant_id = $1",
-                tenant_id
-            )
-            await conn.execute(
-                "SET LOCAL app.is_ai_service = $1",
-                'true'
-            )
+            await self._set_rls_context(conn, tenant_id)
             
             row = await conn.fetchrow(
                 """
@@ -227,14 +201,7 @@ class DatabaseService:
     ) -> Optional[datetime]:
         """Get last continuous learning update timestamp"""
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "SET LOCAL app.current_tenant_id = $1",
-                tenant_id
-            )
-            await conn.execute(
-                "SET LOCAL app.is_ai_service = $1",
-                'true'
-            )
+            await self._set_rls_context(conn, tenant_id)
             
             row = await conn.fetchrow(
                 """
