@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"time"
+
 	"enterprise-attendance-api/internal/middleware"
 	"enterprise-attendance-api/internal/models"
 	"enterprise-attendance-api/internal/services"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // CreateUser creates a new user
@@ -14,13 +17,103 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		userID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 
-		var user models.User
-		if err := c.BodyParser(&user); err != nil {
+		var body struct {
+			EmployeeID      string  `json:"employee_id"`
+			Email           string  `json:"email"`
+			Phone           *string `json:"phone"`
+			FirstName       string  `json:"first_name"`
+			LastName        string  `json:"last_name"`
+			DepartmentID    *string `json:"department_id"`
+			Designation     *string `json:"designation"`
+			DateOfJoining   *string `json:"date_of_joining"`
+			Role            string  `json:"role"`
+			IsActive        *bool   `json:"is_active"`
+			Password        *string `json:"password"`
+			AuthMethod      *string `json:"auth_method"` // "password" | "sso"
+		}
+		if err := c.BodyParser(&body); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Invalid request body",
 			})
 		}
+
+		if body.EmployeeID == "" || body.Email == "" || body.FirstName == "" || body.LastName == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "employee_id, email, first_name and last_name are required",
+			})
+		}
+
+		// Default role to employee
+		if body.Role == "" {
+			body.Role = "employee"
+		}
+
+		// Enforce RBAC on role assignment
+		if actorRole != "org_admin" {
+			// Non-org_admins cannot create org_admins
+			if body.Role == "org_admin" {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "Only Org Admin can create Org Admin users",
+				})
+			}
+		}
+
+		// High-privilege roles should normally use password login unless SSO-only
+		needsPassword := body.Role == "org_admin" || body.Role == "hr" || body.Role == "dept_manager"
+		authMethod := "password"
+		if body.AuthMethod != nil && *body.AuthMethod != "" {
+			authMethod = *body.AuthMethod
+		}
+		if needsPassword && authMethod == "password" && (body.Password == nil || *body.Password == "") {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Password is required for admin/HR roles when auth_method is password",
+			})
+		}
+
+		var passwordHash *string
+		if body.Password != nil && *body.Password != "" {
+			h, err := bcrypt.GenerateFromPassword([]byte(*body.Password), bcrypt.DefaultCost)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "Failed to hash password",
+				})
+			}
+			s := string(h)
+			passwordHash = &s
+		}
+
+		// Map into models.User
+		now := time.Now()
+		user := models.User{
+			EmployeeID: body.EmployeeID,
+			Email:      body.Email,
+			Phone:      body.Phone,
+			FirstName:  body.FirstName,
+			LastName:   body.LastName,
+			Designation: body.Designation,
+			Role:       body.Role,
+			IsActive:   true,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if body.IsActive != nil {
+			user.IsActive = *body.IsActive
+		}
+		if body.DepartmentID != nil && *body.DepartmentID != "" {
+			if depID, err := uuid.Parse(*body.DepartmentID); err == nil {
+				user.DepartmentID = &depID
+			}
+		}
+		if body.DateOfJoining != nil && *body.DateOfJoining != "" {
+			if dt, err := time.Parse(time.RFC3339, *body.DateOfJoining); err == nil {
+				user.DateOfJoining = dt
+			}
+		} else {
+			user.DateOfJoining = now
+		}
+		user.PasswordHash = passwordHash
 
 		if err := userSvc.CreateUser(c.Context(), tenantID, &user); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

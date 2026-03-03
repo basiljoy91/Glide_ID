@@ -31,6 +31,12 @@ export function PublicNavbar() {
             Blog
           </Link>
           <Link
+            href="/features"
+            className="text-sm font-medium transition-colors hover:text-primary"
+          >
+            Features
+          </Link>
+          <Link
             href="/contact"
             className="text-sm font-medium transition-colors hover:text-primary"
           >
@@ -63,6 +69,11 @@ export function PublicNavbar() {
           {/* Admin Login Button */}
           <Link href="/admin/login">
             <Button variant="outline">Admin Login</Button>
+          </Link>
+
+          {/* Kiosk */}
+          <Link href="/kiosk">
+            <Button variant="secondary">Kiosk</Button>
           </Link>
 
           {/* Get Started CTA */}

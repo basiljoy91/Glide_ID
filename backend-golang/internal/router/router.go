@@ -28,6 +28,8 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		public.Post("/auth/sso/initiate", handlers.InitiateSSO(svc.Attendance.GetDB()))
 		public.Post("/auth/sso/callback", handlers.SSOCallback(svc.Auth))
 		public.Post("/onboarding/provision", handlers.ProvisionOrganization(svc.Attendance.GetDB()))
+		public.Get("/enroll/info/:token", handlers.EnrollInfo(svc.User))
+		public.Post("/enroll/face/:token", handlers.EnrollFace(svc.Attendance))
 	}
 
 	// Kiosk routes (HMAC authenticated)
@@ -67,6 +69,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			users.Post("/", handlers.CreateUser(svc.User, svc.Audit))
 			users.Put("/:id", handlers.UpdateUser(svc.User, svc.Audit))
 			users.Delete("/:id", handlers.DeleteUser(svc.User, svc.Audit))
+			users.Post("/:id/enroll-link", handlers.GenerateEnrollToken(svc.Auth))
 		}
 
 		// Departments

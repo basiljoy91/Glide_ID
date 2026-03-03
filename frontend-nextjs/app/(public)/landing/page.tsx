@@ -17,10 +17,15 @@ export default function LandingPage() {
           Secure, scalable, and compliant. Transform your workforce management with
           AI-powered biometric authentication and seamless physical access control.
         </p>
-        <div className="flex gap-4 justify-center">
+        <div className="flex flex-wrap gap-4 justify-center">
           <Link href="/onboarding">
             <Button size="lg" className="text-lg px-8">
               Get Started
+            </Button>
+          </Link>
+          <Link href="/admin/login">
+            <Button size="lg" variant="outline" className="text-lg px-8">
+              Admin Login
             </Button>
           </Link>
           <Link href="/kiosk">
@@ -83,11 +88,18 @@ export default function LandingPage() {
         <p className="text-muted-foreground mb-8 max-w-xl mx-auto">
           Join leading enterprises using Glide ID for secure, compliant workforce management.
         </p>
-        <Link href="/onboarding">
-          <Button size="lg" className="text-lg px-8">
-            Start Free Trial
-          </Button>
-        </Link>
+        <div className="flex flex-wrap gap-3 justify-center">
+          <Link href="/onboarding">
+            <Button size="lg" className="text-lg px-8">
+              Start Free Trial
+            </Button>
+          </Link>
+          <Link href="/about">
+            <Button size="lg" variant="outline" className="text-lg px-8">
+              Learn about multi-tenant security
+            </Button>
+          </Link>
+        </div>
       </section>
     </div>
   )

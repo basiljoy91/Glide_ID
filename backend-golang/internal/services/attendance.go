@@ -164,6 +164,40 @@ func (s *AttendanceService) ProcessOfflineSync(ctx context.Context, tenantID, ki
 	return s.ProcessCheckIn(ctx, tenantID, req)
 }
 
+// VectorizeAndStore calls the AI service to vectorize and persist a face vector for a user.
+func (s *AttendanceService) VectorizeAndStore(ctx context.Context, tenantID, userID, imageBase64 string) error {
+	if imageBase64 == "" {
+		return fmt.Errorf("image_base64 is required")
+	}
+	payload := map[string]interface{}{
+		"user_id":      userID,
+		"tenant_id":    tenantID,
+		"image_base64": imageBase64,
+		"update_existing": false,
+	}
+	jsonData, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/vectorize", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create AI request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.aiServiceAPIKey != "" {
+		req.Header.Set("X-API-Key", s.aiServiceAPIKey)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("AI service request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("AI service responded with %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // CheckInRequest represents a check-in request from kiosk
 type CheckInRequest struct {
 	ImageBase64      string  `json:"image_base64"`
