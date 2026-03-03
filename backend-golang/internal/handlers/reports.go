@@ -1,0 +1,266 @@
+package handlers
+
+import (
+	"context"
+	"time"
+
+	"enterprise-attendance-api/internal/middleware"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type checkinsDay struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
+}
+
+// GetCheckins7d returns check-in counts per day for last 7 days (including today).
+func GetCheckins7d(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		rows, err := db.Query(ctx, `
+			SELECT d::date AS day, COALESCE(COUNT(al.id), 0) AS cnt
+			FROM generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, INTERVAL '1 day') d
+			LEFT JOIN attendance_logs al
+			  ON al.tenant_id = $1
+			 AND al.punch_time::date = d::date
+			GROUP BY day
+			ORDER BY day ASC
+		`, tenantID)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch chart data"})
+		}
+		defer rows.Close()
+
+		out := make([]checkinsDay, 0, 7)
+		for rows.Next() {
+			var day time.Time
+			var cnt int
+			if err := rows.Scan(&day, &cnt); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read chart data"})
+			}
+			out = append(out, checkinsDay{
+				Date:  day.Format("2006-01-02"),
+				Count: cnt,
+			})
+		}
+
+		return c.JSON(out)
+	}
+}
+
+type anomalyRow struct {
+	ID                 uuid.UUID  `json:"id"`
+	PunchTime          time.Time  `json:"punch_time"`
+	Status             string     `json:"status"`
+	VerificationMethod string     `json:"verification_method"`
+	AnomalyReason      *string    `json:"anomaly_reason"`
+	UserID             uuid.UUID  `json:"user_id"`
+	EmployeeID         string     `json:"employee_id"`
+	FirstName          string     `json:"first_name"`
+	LastName           string     `json:"last_name"`
+	KioskCode          *string    `json:"kiosk_code"`
+}
+
+// ListAnomalies lists recent anomalies for the tenant.
+func ListAnomalies(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		limit := c.QueryInt("limit", 20)
+		offset := c.QueryInt("offset", 0)
+		if limit <= 0 || limit > 200 {
+			limit = 20
+		}
+		if offset < 0 {
+			offset = 0
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		rows, err := db.Query(ctx, `
+			SELECT
+				al.id, al.punch_time, al.status, al.verification_method, al.anomaly_reason,
+				al.user_id,
+				u.employee_id, u.first_name, u.last_name,
+				k.code as kiosk_code
+			FROM attendance_logs al
+			JOIN users u ON u.id = al.user_id
+			LEFT JOIN kiosks k ON k.id = al.kiosk_id
+			WHERE al.tenant_id = $1
+			  AND al.anomaly_detected = true
+			ORDER BY al.punch_time DESC
+			LIMIT $2 OFFSET $3
+		`, tenantID, limit, offset)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list anomalies"})
+		}
+		defer rows.Close()
+
+		out := make([]anomalyRow, 0)
+		for rows.Next() {
+			var r anomalyRow
+			if err := rows.Scan(&r.ID, &r.PunchTime, &r.Status, &r.VerificationMethod, &r.AnomalyReason, &r.UserID, &r.EmployeeID, &r.FirstName, &r.LastName, &r.KioskCode); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read anomalies"})
+			}
+			out = append(out, r)
+		}
+
+		return c.JSON(out)
+	}
+}
+
+// GetAnomaly returns anomaly details by id.
+func GetAnomaly(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		id := c.Params("id")
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		var r anomalyRow
+		err := db.QueryRow(ctx, `
+			SELECT
+				al.id, al.punch_time, al.status, al.verification_method, al.anomaly_reason,
+				al.user_id,
+				u.employee_id, u.first_name, u.last_name,
+				k.code as kiosk_code
+			FROM attendance_logs al
+			JOIN users u ON u.id = al.user_id
+			LEFT JOIN kiosks k ON k.id = al.kiosk_id
+			WHERE al.tenant_id = $1
+			  AND al.id = $2
+		`, tenantID, id).Scan(
+			&r.ID, &r.PunchTime, &r.Status, &r.VerificationMethod, &r.AnomalyReason,
+			&r.UserID, &r.EmployeeID, &r.FirstName, &r.LastName, &r.KioskCode,
+		)
+		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Anomaly not found"})
+		}
+
+		return c.JSON(r)
+	}
+}
+
+// ResolveAnomaly marks anomaly as resolved (sets anomaly_detected=false and appends a note).
+func ResolveAnomaly(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		id := c.Params("id")
+
+		var body struct {
+			Note string `json:"note"`
+		}
+		_ = c.BodyParser(&body)
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		_, err := db.Exec(ctx, `
+			UPDATE attendance_logs
+			SET
+				anomaly_detected = false,
+				notes = CASE
+					WHEN $3 = '' THEN notes
+					WHEN notes IS NULL OR notes = '' THEN '[Resolved] ' || $3
+					ELSE notes || E'\n' || '[Resolved] ' || $3
+				END,
+				updated_at = NOW()
+			WHERE id = $1 AND tenant_id = $2
+		`, id, tenantID, body.Note)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve anomaly"})
+		}
+
+		return c.JSON(fiber.Map{"success": true})
+	}
+}
+
+type attendanceReportDay struct {
+	Date      string `json:"date"`
+	CheckIns  int    `json:"check_ins"`
+	CheckOuts int    `json:"check_outs"`
+	Anomalies int    `json:"anomalies"`
+}
+
+type attendanceReportResponse struct {
+	StartDate string              `json:"start_date"`
+	EndDate   string              `json:"end_date"`
+	Days      []attendanceReportDay `json:"days"`
+	Totals    struct {
+		CheckIns  int `json:"check_ins"`
+		CheckOuts int `json:"check_outs"`
+		Anomalies int `json:"anomalies"`
+		Logs      int `json:"logs"`
+	} `json:"totals"`
+}
+
+// GetAttendanceReport returns daily attendance counts for a date range (default last 7 days).
+func GetAttendanceReport(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+
+		start := c.Query("start_date", time.Now().AddDate(0, 0, -6).Format("2006-01-02"))
+		end := c.Query("end_date", time.Now().Format("2006-01-02"))
+
+		startT, err1 := time.Parse("2006-01-02", start)
+		endT, err2 := time.Parse("2006-01-02", end)
+		if err1 != nil || err2 != nil || endT.Before(startT) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid date range"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 7*time.Second)
+		defer cancel()
+
+		rows, err := db.Query(ctx, `
+			SELECT d::date AS day,
+				COALESCE(COUNT(al.id) FILTER (WHERE al.status = 'check_in'), 0) AS check_ins,
+				COALESCE(COUNT(al.id) FILTER (WHERE al.status = 'check_out'), 0) AS check_outs,
+				COALESCE(COUNT(al.id) FILTER (WHERE al.anomaly_detected = true), 0) AS anomalies,
+				COALESCE(COUNT(al.id), 0) AS logs
+			FROM generate_series($2::date, $3::date, INTERVAL '1 day') d
+			LEFT JOIN attendance_logs al
+			  ON al.tenant_id = $1
+			 AND al.punch_time::date = d::date
+			GROUP BY day
+			ORDER BY day ASC
+		`, tenantID, start, end)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to generate report"})
+		}
+		defer rows.Close()
+
+		resp := attendanceReportResponse{
+			StartDate: start,
+			EndDate:   end,
+			Days:      []attendanceReportDay{},
+		}
+
+		for rows.Next() {
+			var day time.Time
+			var ci, co, an, logs int
+			if err := rows.Scan(&day, &ci, &co, &an, &logs); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read report"})
+			}
+			resp.Days = append(resp.Days, attendanceReportDay{
+				Date:      day.Format("2006-01-02"),
+				CheckIns:  ci,
+				CheckOuts: co,
+				Anomalies: an,
+			})
+			resp.Totals.CheckIns += ci
+			resp.Totals.CheckOuts += co
+			resp.Totals.Anomalies += an
+			resp.Totals.Logs += logs
+		}
+
+		return c.JSON(resp)
+	}
+}
+

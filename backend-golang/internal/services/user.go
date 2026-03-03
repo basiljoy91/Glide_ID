@@ -148,3 +148,50 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 	return user, nil
 }
 
+// UpdateUserBasic updates core user fields within a tenant and returns the updated user.
+func (s *UserService) UpdateUserBasic(ctx context.Context, tenantID, userID string, u *models.User) (*models.User, error) {
+	user := &models.User{}
+	err := s.db.QueryRow(ctx, `
+		UPDATE users
+		SET
+			email = $1,
+			phone = $2,
+			first_name = $3,
+			last_name = $4,
+			department_id = $5,
+			designation = $6,
+			role = $7,
+			is_active = $8,
+			updated_at = NOW()
+		WHERE id = $9 AND tenant_id = $10 AND deleted_at IS NULL
+		RETURNING id, tenant_id, employee_id, email, phone, first_name, last_name,
+			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
+			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
+			last_login_at, created_at, updated_at, deleted_at
+	`, u.Email, u.Phone, u.FirstName, u.LastName, u.DepartmentID, u.Designation,
+		u.Role, u.IsActive, userID, tenantID).Scan(
+		&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.Phone,
+		&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
+		&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
+		&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
+		&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to update user: %w", err)
+	}
+	return user, nil
+}
+
+// SoftDeleteUser marks a user as deleted within a tenant.
+func (s *UserService) SoftDeleteUser(ctx context.Context, tenantID, userID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE users
+		SET deleted_at = NOW(), is_active = false, updated_at = NOW()
+		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+	`, userID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to delete user: %w", err)
+	}
+	return nil
+}
+

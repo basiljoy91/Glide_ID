@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -46,6 +47,10 @@ type Config struct {
 
 	// HMAC for Kiosk
 	KioskHMACSecret string
+	HMACMaxSkewSeconds int
+
+	// Offline encryption (private key used server-side to decrypt kiosk offline payloads)
+	OfflinePrivateKeyPEM string
 
 	// HRMS Webhooks
 	HRMSWebhookSecret string
@@ -83,6 +88,9 @@ func Load() *Config {
 
 		EncryptionKey:   getEnv("ENCRYPTION_KEY", ""),
 		KioskHMACSecret: getEnv("KIOSK_HMAC_SECRET", ""),
+		HMACMaxSkewSeconds: parseInt(getEnv("HMAC_MAX_SKEW_SECONDS", "300"), 300),
+
+		OfflinePrivateKeyPEM: getEnv("OFFLINE_PRIVATE_KEY_PEM", ""),
 
 		HRMSWebhookSecret: getEnv("HRMS_WEBHOOK_SECRET", ""),
 	}
@@ -115,5 +123,13 @@ func parseCORSOrigins(s string) []string {
 		return []string{"*"}
 	}
 	return strings.Split(s, ",")
+}
+
+func parseInt(s string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return def
+	}
+	return n
 }
 

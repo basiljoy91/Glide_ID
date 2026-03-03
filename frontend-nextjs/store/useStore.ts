@@ -28,9 +28,11 @@ interface ThemeState {
 
 interface KioskState {
   kioskCode: string | null
+  kioskHmacSecret: string | null
   isOnline: boolean
   lastSyncTime: Date | null
   setKioskCode: (code: string | null) => void
+  setKioskHmacSecret: (secret: string | null) => void
   setOnlineStatus: (isOnline: boolean) => void
   setLastSyncTime: (time: Date | null) => void
 }
@@ -70,9 +72,11 @@ export const useKioskStore = create<KioskState>()(
   persist(
     (set) => ({
       kioskCode: null,
+      kioskHmacSecret: null,
       isOnline: true,
       lastSyncTime: null,
       setKioskCode: (code) => set({ kioskCode: code }),
+      setKioskHmacSecret: (secret) => set({ kioskHmacSecret: secret }),
       setOnlineStatus: (isOnline) => set({ isOnline }),
       setLastSyncTime: (time) => set({ lastSyncTime: time }),
     }),

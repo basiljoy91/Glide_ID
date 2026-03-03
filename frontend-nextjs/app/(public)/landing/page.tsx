@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Shield, Users, Clock, Zap, Lock, BarChart3 } from 'lucide-react'
+import { KioskCodeLauncher } from '@/components/kiosk/KioskCodeLauncher'
 
 export default function LandingPage() {
   return (
@@ -22,12 +23,19 @@ export default function LandingPage() {
               Get Started
             </Button>
           </Link>
+          <Link href="/kiosk">
+            <Button size="lg" variant="secondary" className="text-lg px-8">
+              Kiosk Check-In
+            </Button>
+          </Link>
           <Link href="/pricing">
             <Button size="lg" variant="outline" className="text-lg px-8">
               View Pricing
             </Button>
           </Link>
         </div>
+
+        <KioskCodeLauncher />
       </section>
 
       {/* Features Section */}

@@ -3,9 +3,19 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"enterprise-attendance-api/internal/models"
@@ -19,6 +29,7 @@ type AttendanceService struct {
 	mqttClient      MQTTClient
 	aiServiceURL    string
 	aiServiceAPIKey string
+	offlinePrivateKey *rsa.PrivateKey
 }
 
 // GetDB returns the database connection (for middleware)
@@ -30,13 +41,127 @@ type MQTTClient interface {
 	Publish(topic string, payload []byte) error
 }
 
-func NewAttendanceService(db *pgxpool.Pool, mqttClient MQTTClient, aiServiceURL, aiServiceAPIKey string) *AttendanceService {
+func NewAttendanceService(db *pgxpool.Pool, mqttClient MQTTClient, aiServiceURL, aiServiceAPIKey string, offlinePrivateKeyPEM string) *AttendanceService {
+	var pk *rsa.PrivateKey
+	if strings.TrimSpace(offlinePrivateKeyPEM) != "" {
+		if parsed, err := parseRSAPrivateKeyPEM([]byte(offlinePrivateKeyPEM)); err == nil {
+			pk = parsed
+		}
+	}
 	return &AttendanceService{
 		db:              db,
 		mqttClient:      mqttClient,
 		aiServiceURL:    aiServiceURL,
 		aiServiceAPIKey: aiServiceAPIKey,
+		offlinePrivateKey: pk,
 	}
+}
+
+type offlineEnvelope struct {
+	Alg string `json:"alg"`
+	EK  string `json:"ek"` // RSA-OAEP encrypted AES key (base64)
+	IV  string `json:"iv"` // AES-GCM IV (base64)
+	CT  string `json:"ct"` // AES-GCM ciphertext (base64)
+}
+
+func parseRSAPrivateKeyPEM(pemBytes []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("invalid PEM")
+	}
+	// Try PKCS8 first
+	if k, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		if rsaKey, ok := k.(*rsa.PrivateKey); ok {
+			return rsaKey, nil
+		}
+		return nil, errors.New("not RSA private key")
+	}
+	// Fallback PKCS1
+	if k, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return k, nil
+	}
+	return nil, errors.New("failed to parse RSA private key")
+}
+
+func (s *AttendanceService) decryptOfflinePayload(encryptedPayload string) ([]byte, error) {
+	if s.offlinePrivateKey == nil {
+		return nil, errors.New("offline decryption not configured")
+	}
+
+	var env offlineEnvelope
+	if err := json.Unmarshal([]byte(encryptedPayload), &env); err != nil {
+		return nil, fmt.Errorf("invalid envelope: %w", err)
+	}
+
+	ek, err := base64.StdEncoding.DecodeString(env.EK)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ek: %w", err)
+	}
+	iv, err := base64.StdEncoding.DecodeString(env.IV)
+	if err != nil {
+		return nil, fmt.Errorf("invalid iv: %w", err)
+	}
+	ct, err := base64.StdEncoding.DecodeString(env.CT)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ct: %w", err)
+	}
+
+	aesKey, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, s.offlinePrivateKey, ek, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt key failed: %w", err)
+	}
+
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("aes cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("gcm: %w", err)
+	}
+	plain, err := gcm.Open(nil, iv, ct, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt payload failed: %w", err)
+	}
+	return plain, nil
+}
+
+type OfflineSyncDecrypted struct {
+	Type            string `json:"type"`
+	ImageData       string `json:"imageData"`
+	Timestamp       int64  `json:"timestamp"`
+	MonotonicOffset int64  `json:"monotonicOffset"`
+	HasConsented    *bool  `json:"has_consented"`
+}
+
+// ProcessOfflineSync decrypts an offline payload and processes it as a check-in.
+func (s *AttendanceService) ProcessOfflineSync(ctx context.Context, tenantID, kioskCode string, encryptedPayload string) (*CheckInResponse, error) {
+	plain, err := s.decryptOfflinePayload(encryptedPayload)
+	if err != nil {
+		return nil, err
+	}
+	var d OfflineSyncDecrypted
+	if err := json.Unmarshal(plain, &d); err != nil {
+		return nil, fmt.Errorf("invalid decrypted payload: %w", err)
+	}
+	// Convert to ProcessCheckIn request
+	localTime := time.UnixMilli(d.Timestamp).UTC().Format(time.RFC3339)
+	mon := d.MonotonicOffset
+	req := CheckInRequest{
+		ImageBase64:        "",
+		KioskCode:          kioskCode,
+		LocalTime:          &localTime,
+		MonotonicOffsetMs:  &mon,
+		VerificationMethod: "biometric",
+		HasConsented:       d.HasConsented,
+	}
+	// Extract base64 from data URL if present
+	if idx := strings.Index(d.ImageData, ","); idx != -1 {
+		req.ImageBase64 = d.ImageData[idx+1:]
+	} else {
+		req.ImageBase64 = d.ImageData
+	}
+	return s.ProcessCheckIn(ctx, tenantID, req)
 }
 
 // CheckInRequest represents a check-in request from kiosk
@@ -48,6 +173,7 @@ type CheckInRequest struct {
 	VerificationMethod string `json:"verification_method"` // "biometric", "pin"
 	PinCode         *string `json:"pin_code"`
 	IPAddress       *string `json:"ip_address"`
+	HasConsented    *bool   `json:"has_consented"`
 }
 
 // CheckInResponse represents the response
@@ -196,6 +322,17 @@ func (s *AttendanceService) processBiometricCheckIn(
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert attendance log: %w", err)
+	}
+
+	// If kiosk flow indicated explicit consent, persist on user record
+	if req.HasConsented != nil && *req.HasConsented {
+		_, _ = s.db.Exec(ctx, `
+			UPDATE users
+			SET data_privacy_consent = true,
+				consent_date = COALESCE(consent_date, NOW()),
+				updated_at = NOW()
+			WHERE id = $1 AND tenant_id = $2 AND data_privacy_consent = false
+		`, userID, tenantID)
 	}
 
 	// Trigger door relay via MQTT

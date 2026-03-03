@@ -8,7 +8,7 @@ import { useKioskStore } from '@/store/useStore'
 export function useOfflineQueue() {
   const [isOnline, setIsOnline] = useState(true)
   const [queueStats, setQueueStats] = useState({ total: 0, unsynced: 0, synced: 0 })
-  const { setOnlineStatus, setLastSyncTime } = useKioskStore()
+  const { setOnlineStatus, setLastSyncTime, kioskCode, kioskHmacSecret } = useKioskStore()
 
   useEffect(() => {
     // Initialize offline queue
@@ -53,11 +53,12 @@ export function useOfflineQueue() {
 
   const syncQueue = useCallback(async () => {
     if (!navigator.onLine) return
+    if (!kioskCode || !kioskHmacSecret) return
 
     try {
       const result = await offlineQueue.syncQueue(
         config.apiUrl,
-        '' // API key would be stored securely
+        kioskHmacSecret
       )
       
       if (result.success > 0) {
@@ -67,17 +68,18 @@ export function useOfflineQueue() {
     } catch (error) {
       console.error('Queue sync failed:', error)
     }
-  }, [])
+  }, [kioskCode, kioskHmacSecret, setLastSyncTime, setOnlineStatus])
 
   const addToQueue = useCallback(async (
     type: 'check_in' | 'check_out',
     imageData: string,
     monotonicOffset: number = 0
   ) => {
-    const id = await offlineQueue.addToQueue(type, imageData, monotonicOffset)
+    if (!kioskCode) throw new Error('Kiosk code not set')
+    const id = await offlineQueue.addToQueue(type, imageData, monotonicOffset, kioskCode, true)
     await updateStats()
     return id
-  }, [])
+  }, [kioskCode])
 
   return {
     isOnline,

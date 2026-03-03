@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"enterprise-attendance-api/internal/middleware"
 	"enterprise-attendance-api/internal/services"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -58,16 +60,45 @@ func HRMSWebhook(hrmsSvc *services.HRMSService) fiber.Handler {
 // ListHRMSIntegrations lists HRMS integrations
 func ListHRMSIntegrations(hrmsSvc *services.HRMSService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Implementation
-		return c.JSON(fiber.Map{"message": "Not implemented"})
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		list, err := hrmsSvc.ListIntegrations(ctx, tenantID)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load integrations"})
+		}
+
+		return c.JSON(list)
 	}
 }
 
 // CreateHRMSIntegration creates an HRMS integration
 func CreateHRMSIntegration(hrmsSvc *services.HRMSService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Implementation
-		return c.JSON(fiber.Map{"message": "Not implemented"})
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+
+		var body services.UpsertIntegrationInput
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		out, err := hrmsSvc.UpsertIntegration(ctx, tenantID, body)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+
+		return c.Status(fiber.StatusCreated).JSON(out)
 	}
 }
 

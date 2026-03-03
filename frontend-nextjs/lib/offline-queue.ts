@@ -1,6 +1,6 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb'
-import CryptoJS from 'crypto-js'
 import { config } from './config'
+import { aesGcmEncryptBase64, hmacSha256Hex, importRsaOaepPublicKey, rsaOaepEncryptBase64 } from './crypto'
 
 interface OfflineQueueItem {
   id: string
@@ -9,6 +9,7 @@ interface OfflineQueueItem {
   encryptedPayload: string
   timestamp: number
   monotonicOffset: number
+  kioskCode: string
   synced: 0 | 1
   retryCount: number
 }
@@ -24,6 +25,7 @@ interface AttendanceDB extends DBSchema {
 class OfflineQueue {
   private db: IDBPDatabase<AttendanceDB> | null = null
   private publicKey: string
+  private cachedCryptoKey: CryptoKey | null = null
 
   constructor() {
     this.publicKey = config.publicKey || ''
@@ -42,38 +44,54 @@ class OfflineQueue {
     return this.db
   }
 
-  // Encrypt payload using public key (asymmetric encryption)
-  private encryptPayload(data: any): string {
-    if (!this.publicKey) {
-      // Fallback to AES if no public key (for development)
-      return CryptoJS.AES.encrypt(JSON.stringify(data), 'dev-key').toString()
+  // Encrypt payload (envelope: RSA-OAEP-256 + AES-256-GCM)
+  private async encryptPayload(data: any): Promise<string> {
+    if (!this.publicKey || !globalThis.crypto?.subtle) {
+      throw new Error('Offline encryption public key not configured')
     }
 
-    // In production, use RSA encryption with public key
-    // For now, using AES with public key as salt
-    return CryptoJS.AES.encrypt(JSON.stringify(data), this.publicKey).toString()
+    if (!this.cachedCryptoKey) {
+      this.cachedCryptoKey = await importRsaOaepPublicKey(this.publicKey)
+    }
+
+    const enc = new TextEncoder()
+    const plaintext = enc.encode(JSON.stringify(data))
+    const { keyRaw, ivB64, ctB64 } = await aesGcmEncryptBase64(plaintext)
+    const ekB64 = await rsaOaepEncryptBase64(this.cachedCryptoKey, keyRaw)
+
+    return JSON.stringify({
+      alg: 'RSA-OAEP-256+A256GCM',
+      ek: ekB64,
+      iv: ivB64,
+      ct: ctB64,
+    })
   }
 
   // Add item to offline queue
   async addToQueue(
     type: 'check_in' | 'check_out',
     imageData: string,
-    monotonicOffset: number = 0
+    monotonicOffset: number = 0,
+    kioskCode: string,
+    hasConsented: boolean = true
   ): Promise<string> {
     const db = await this.init()
     
+    const timestamp = Date.now()
     const item: OfflineQueueItem = {
       id: `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       type,
       imageData,
-      encryptedPayload: this.encryptPayload({
+      encryptedPayload: await this.encryptPayload({
         type,
         imageData,
-        timestamp: Date.now(),
+        timestamp,
         monotonicOffset,
+        has_consented: hasConsented,
       }),
-      timestamp: Date.now(),
+      timestamp,
       monotonicOffset,
+      kioskCode,
       synced: 0,
       retryCount: 0,
     }
@@ -125,30 +143,27 @@ class OfflineQueue {
   }
 
   // Sync queue with backend
-  async syncQueue(apiUrl: string, apiKey: string): Promise<{ success: number; failed: number }> {
+  async syncQueue(apiUrl: string, kioskHmacSecret: string): Promise<{ success: number; failed: number }> {
     const unsynced = await this.getUnsyncedItems()
     let success = 0
     let failed = 0
 
     for (const item of unsynced) {
       try {
-        // Decrypt payload (in real implementation, backend would decrypt)
-        const decrypted = CryptoJS.AES.decrypt(item.encryptedPayload, this.publicKey || 'dev-key').toString(CryptoJS.enc.Utf8)
-        const payload = JSON.parse(decrypted)
+        const timestamp = Math.floor(Date.now() / 1000).toString()
+        const body = JSON.stringify({ encrypted_payload: item.encryptedPayload })
+        const msg = `${body}${timestamp}${item.kioskCode}`
+        const signature = await hmacSha256Hex(kioskHmacSecret, msg)
 
-        // Send to backend
-        const response = await fetch(`${apiUrl}/api/v1/kiosk/check-in`, {
+        const response = await fetch(`${apiUrl}/api/v1/kiosk/offline/sync`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-API-Key': apiKey,
+            'X-Kiosk-Code': item.kioskCode,
+            'X-Timestamp': timestamp,
+            'X-HMAC-Signature': signature,
           },
-          body: JSON.stringify({
-            image_base64: payload.imageData.split(',')[1], // Remove data:image/jpeg;base64, prefix
-            local_time: new Date(payload.timestamp).toISOString(),
-            monotonic_offset_ms: payload.monotonicOffset,
-            verification_method: 'biometric',
-          }),
+          body,
         })
 
         if (response.ok) {

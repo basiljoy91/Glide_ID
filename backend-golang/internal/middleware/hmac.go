@@ -13,7 +13,7 @@ import (
 )
 
 // HMACAuth middleware verifies HMAC signatures for kiosk requests
-func HMACAuth(db *pgxpool.Pool) fiber.Handler {
+func HMACAuth(db *pgxpool.Pool, maxSkewSeconds int) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get kiosk code from header
 		kioskCode := c.Get("X-Kiosk-Code")
@@ -47,24 +47,28 @@ func HMACAuth(db *pgxpool.Pool) fiber.Handler {
 			})
 		}
 
-		// Check if timestamp is within acceptable window (5 minutes)
+		// Check if timestamp is within acceptable window
 		now := time.Now().Unix()
-		if abs(now-timestamp) > 300 { // 5 minutes
+		if maxSkewSeconds <= 0 {
+			maxSkewSeconds = 300
+		}
+		if abs(now-timestamp) > int64(maxSkewSeconds) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Request timestamp expired",
 			})
 		}
 
 		// Get kiosk HMAC secret from database
+		var kioskID uuid.UUID
 		var tenantID uuid.UUID
 		var hmacSecret string
 		var status string
 
 		err := db.QueryRow(c.Context(), `
-			SELECT tenant_id, hmac_secret, status
+			SELECT id, tenant_id, hmac_secret, status
 			FROM kiosks
 			WHERE code = $1 AND status = 'active'
-		`, kioskCode).Scan(&tenantID, &hmacSecret, &status)
+		`, kioskCode).Scan(&kioskID, &tenantID, &hmacSecret, &status)
 
 		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -90,7 +94,7 @@ func HMACAuth(db *pgxpool.Pool) fiber.Handler {
 		// Store kiosk info in context
 		c.Locals("kiosk_code", kioskCode)
 		c.Locals("tenant_id", tenantID.String())
-		c.Locals("kiosk_id", "") // Will be set if needed
+		c.Locals("kiosk_id", kioskID.String())
 
 		return c.Next()
 	}

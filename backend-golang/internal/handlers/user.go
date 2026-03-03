@@ -84,8 +84,39 @@ func ListUsers(userSvc *services.UserService) fiber.Handler {
 // UpdateUser updates a user
 func UpdateUser(userSvc *services.UserService, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Implementation
-		return c.JSON(fiber.Map{"message": "Not implemented"})
+		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		targetUserID := c.Params("id")
+
+		var body models.User
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Invalid request body",
+			})
+		}
+
+		updated, err := userSvc.UpdateUserBasic(c.Context(), tenantID, targetUserID, &body)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+
+		tenantUUID := uuid.MustParse(tenantID)
+		actorUUID := uuid.MustParse(actorUserID)
+		targetUUID := uuid.MustParse(targetUserID)
+		auditSvc.LogAction(c.Context(), &models.AuditLog{
+			TenantID:     &tenantUUID,
+			UserID:       &actorUUID,
+			TargetUserID: &targetUUID,
+			Action:       "user_updated",
+			ResourceType: stringPtr("user"),
+			ResourceID:   &targetUUID,
+			IPAddress:    stringPtr(c.IP()),
+			UserAgent:    stringPtr(c.Get("User-Agent")),
+		})
+
+		return c.JSON(updated)
 	}
 }
 
@@ -97,6 +128,12 @@ func DeleteUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		targetUserID := c.Params("id")
 
 		// Soft delete user
+		if err := userSvc.SoftDeleteUser(c.Context(), tenantID, targetUserID); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+
 		// Log audit
 		tenantUUID := uuid.MustParse(tenantID)
 		userUUID := uuid.MustParse(userID)

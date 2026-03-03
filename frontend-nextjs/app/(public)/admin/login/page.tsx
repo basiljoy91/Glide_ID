@@ -107,7 +107,8 @@ export default function AdminLoginPage() {
       if (data.user.role === 'super_admin') {
         router.push('/admin/super')
       } else {
-        router.push('/dashboard')
+        // Org Admin / HR / Dept Manager / Employee
+        router.push('/admin/org')
       }
     } catch (error: any) {
       toast.error(error.message || 'Login failed')

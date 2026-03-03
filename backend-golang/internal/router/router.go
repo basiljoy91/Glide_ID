@@ -32,10 +32,11 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 	// Kiosk routes (HMAC authenticated)
 	kiosk := app.Group("/api/v1/kiosk")
-	kiosk.Use(middleware.HMACAuth(svc.Attendance.GetDB()))
+	kiosk.Use(middleware.HMACAuth(svc.Attendance.GetDB(), cfg.HMACMaxSkewSeconds))
 	{
 		kiosk.Post("/check-in", handlers.CheckIn(svc.Attendance))
-		kiosk.Get("/heartbeat", handlers.KioskHeartbeat)
+		kiosk.Post("/offline/sync", handlers.KioskOfflineSync(svc.Attendance))
+		kiosk.Get("/heartbeat", handlers.KioskHeartbeat(svc.Attendance.GetDB()))
 	}
 
 	// Protected routes (JWT authenticated)
@@ -72,20 +73,20 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		departments := api.Group("/departments")
 		departments.Use(middleware.RequireRole("org_admin", "hr"))
 		{
-			departments.Get("/", handlers.ListDepartments)
-			departments.Post("/", handlers.CreateDepartment)
-			departments.Put("/:id", handlers.UpdateDepartment)
-			departments.Delete("/:id", handlers.DeleteDepartment)
+			departments.Get("/", handlers.ListDepartments(svc.Attendance.GetDB()))
+			departments.Post("/", handlers.CreateDepartment(svc.Attendance.GetDB()))
+			departments.Put("/:id", handlers.UpdateDepartment(svc.Attendance.GetDB()))
+			departments.Delete("/:id", handlers.DeleteDepartment(svc.Attendance.GetDB()))
 		}
 
 		// Kiosks
 		kiosks := api.Group("/kiosks")
 		kiosks.Use(middleware.RequireRole("org_admin"))
 		{
-			kiosks.Get("/", handlers.ListKiosks)
-			kiosks.Post("/", handlers.CreateKiosk)
-			kiosks.Put("/:id", handlers.UpdateKiosk)
-			kiosks.Delete("/:id", handlers.RevokeKiosk)
+			kiosks.Get("/", handlers.ListKiosks(svc.Attendance.GetDB()))
+			kiosks.Post("/", handlers.CreateKiosk(svc.Attendance.GetDB()))
+			kiosks.Put("/:id", handlers.UpdateKiosk(svc.Attendance.GetDB()))
+			kiosks.Delete("/:id", handlers.RevokeKiosk(svc.Attendance.GetDB()))
 		}
 
 		// HRMS Integration
@@ -109,7 +110,12 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		reports := api.Group("/reports")
 		reports.Use(middleware.RequireRole("org_admin", "hr", "dept_manager"))
 		{
-			reports.Get("/attendance", handlers.GenerateAttendanceReport(svc.Attendance))
+			reports.Get("/org-metrics", handlers.GetOrgMetrics(svc.Attendance.GetDB()))
+			reports.Get("/checkins-7d", handlers.GetCheckins7d(svc.Attendance.GetDB()))
+			reports.Get("/anomalies", handlers.ListAnomalies(svc.Attendance.GetDB()))
+			reports.Get("/anomalies/:id", handlers.GetAnomaly(svc.Attendance.GetDB()))
+			reports.Patch("/anomalies/:id/resolve", handlers.ResolveAnomaly(svc.Attendance.GetDB()))
+			reports.Get("/attendance", handlers.GetAttendanceReport(svc.Attendance.GetDB()))
 			reports.Post("/export", handlers.ExportReport(svc.Attendance))
 		}
 	}

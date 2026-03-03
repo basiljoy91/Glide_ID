@@ -44,7 +44,7 @@ func main() {
 
 	// Initialize services
 	authService := services.NewAuthService(cfg.JWTSecret, cfg.JWTExpiry)
-	attendanceService := services.NewAttendanceService(db.Pool, mqttClient, cfg.AIServiceURL, cfg.AIServiceAPIKey)
+	attendanceService := services.NewAttendanceService(db.Pool, mqttClient, cfg.AIServiceURL, cfg.AIServiceAPIKey, cfg.OfflinePrivateKeyPEM)
 	userService := services.NewUserService(db.Pool)
 	hrmsService := services.NewHRMSService(db.Pool)
 	auditService := services.NewAuditService(db.Pool)
@@ -67,7 +67,7 @@ func main() {
 		AllowOrigins:     strings.Join(cfg.CORSOrigins, ","),
 		AllowCredentials: true,
 		AllowMethods:     "GET,POST,PUT,DELETE,PATCH,OPTIONS",
-		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,X-API-Key,X-Tenant-ID,X-Kiosk-Code",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,X-API-Key,X-Tenant-ID,X-Kiosk-Code,X-HMAC-Signature,X-Timestamp",
 	}))
 
 	// Setup routes
