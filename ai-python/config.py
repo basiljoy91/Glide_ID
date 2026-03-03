@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     MAX_LEARNING_FREQUENCY_DAYS: int = int(os.getenv("MAX_LEARNING_FREQUENCY_DAYS", "7"))
     
     # Liveness Detection
-    PASSIVE_LIVENESS_THRESHOLD: float = float(os.getenv("PASSIVE_LIVENESS_THRESHOLD", "0.7"))
-    ACTIVE_LIVENESS_THRESHOLD: float = float(os.getenv("ACTIVE_LIVENESS_THRESHOLD", "0.8"))
+    PASSIVE_LIVENESS_THRESHOLD: float = float(os.getenv("PASSIVE_LIVENESS_THRESHOLD", "0.62"))
+    ACTIVE_LIVENESS_THRESHOLD: float = float(os.getenv("ACTIVE_LIVENESS_THRESHOLD", "0.72"))
     
     # Performance
     VECTOR_DIMENSION: int = int(os.getenv("VECTOR_DIMENSION", "512"))
@@ -63,4 +63,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

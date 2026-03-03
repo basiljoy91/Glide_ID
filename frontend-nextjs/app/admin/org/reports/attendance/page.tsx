@@ -41,6 +41,7 @@ export default function AttendanceReportPage() {
   const [endDate, setEndDate] = useState(defaultEnd)
   const [report, setReport] = useState<ReportResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isExporting, setIsExporting] = useState(false)
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -56,6 +57,10 @@ export default function AttendanceReportPage() {
   }, [isAuthenticated, user?.role])
 
   const load = async (s = startDate, e = endDate) => {
+    if (!s || !e || e < s) {
+      toast.error('Please choose a valid date range')
+      return
+    }
     try {
       setIsLoading(true)
       const headers: Record<string, string> = {}
@@ -79,6 +84,50 @@ export default function AttendanceReportPage() {
 
   const chartPoints: ChartPoint7d[] =
     report?.days?.map((d) => ({ date: d.date, count: d.check_ins + d.check_outs })) ?? []
+
+  const applyQuickRange = (days: number) => {
+    const end = new Date()
+    const start = new Date(end.getTime() - (days - 1) * 86400000)
+    const s = start.toISOString().slice(0, 10)
+    const e = end.toISOString().slice(0, 10)
+    setStartDate(s)
+    setEndDate(e)
+    void load(s, e)
+  }
+
+  const exportCsv = async () => {
+    if (!startDate || !endDate || endDate < startDate) {
+      toast.error('Please choose a valid date range')
+      return
+    }
+    try {
+      setIsExporting(true)
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(
+        `${base}/api/v1/reports/export?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`,
+        { method: 'POST', headers }
+      )
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to export CSV')
+      }
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `attendance-report-${startDate}-to-${endDate}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast.success('CSV downloaded')
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to export CSV')
+    } finally {
+      setIsExporting(false)
+    }
+  }
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -107,6 +156,22 @@ export default function AttendanceReportPage() {
               {isLoading ? 'Loading…' : 'Run report'}
             </Button>
           </div>
+          <div className="flex md:justify-end">
+            <Button variant="outline" onClick={exportCsv} disabled={isExporting}>
+              {isExporting ? 'Exporting…' : 'Export CSV'}
+            </Button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 mt-3">
+          <Button size="sm" variant="outline" onClick={() => applyQuickRange(7)}>
+            Last 7 days
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => applyQuickRange(30)}>
+            Last 30 days
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => applyQuickRange(90)}>
+            Last 90 days
+          </Button>
         </div>
       </div>
 
@@ -177,4 +242,3 @@ export default function AttendanceReportPage() {
     </div>
   )
 }
-

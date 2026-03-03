@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"enterprise-attendance-api/internal/middleware"
@@ -20,18 +22,18 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		actorRole := middleware.GetRole(c)
 
 		var body struct {
-			EmployeeID      string  `json:"employee_id"`
-			Email           string  `json:"email"`
-			Phone           *string `json:"phone"`
-			FirstName       string  `json:"first_name"`
-			LastName        string  `json:"last_name"`
-			DepartmentID    *string `json:"department_id"`
-			Designation     *string `json:"designation"`
-			DateOfJoining   *string `json:"date_of_joining"`
-			Role            string  `json:"role"`
-			IsActive        *bool   `json:"is_active"`
-			Password        *string `json:"password"`
-			AuthMethod      *string `json:"auth_method"` // "password" | "sso"
+			EmployeeID    string  `json:"employee_id"`
+			Email         string  `json:"email"`
+			Phone         *string `json:"phone"`
+			FirstName     string  `json:"first_name"`
+			LastName      string  `json:"last_name"`
+			DepartmentID  *string `json:"department_id"`
+			Designation   *string `json:"designation"`
+			DateOfJoining *string `json:"date_of_joining"`
+			Role          string  `json:"role"`
+			IsActive      *bool   `json:"is_active"`
+			Password      *string `json:"password"`
+			AuthMethod    *string `json:"auth_method"` // "password" | "sso"
 		}
 		if err := c.BodyParser(&body); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -66,6 +68,10 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		if body.AuthMethod != nil && *body.AuthMethod != "" {
 			authMethod = *body.AuthMethod
 		}
+		if body.Role == "employee" {
+			// Employees should use kiosk biometrics/PIN; avoid local password storage by default.
+			authMethod = "sso"
+		}
 		if needsPassword && authMethod == "password" && (body.Password == nil || *body.Password == "") {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Password is required for admin/HR roles when auth_method is password",
@@ -87,16 +93,16 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		// Map into models.User
 		now := time.Now()
 		user := models.User{
-			EmployeeID: body.EmployeeID,
-			Email:      body.Email,
-			Phone:      body.Phone,
-			FirstName:  body.FirstName,
-			LastName:   body.LastName,
+			EmployeeID:  body.EmployeeID,
+			Email:       body.Email,
+			Phone:       body.Phone,
+			FirstName:   body.FirstName,
+			LastName:    body.LastName,
 			Designation: body.Designation,
-			Role:       body.Role,
-			IsActive:   true,
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			Role:        body.Role,
+			IsActive:    true,
+			CreatedAt:   now,
+			UpdatedAt:   now,
 		}
 		if body.IsActive != nil {
 			user.IsActive = *body.IsActive
@@ -129,7 +135,7 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 			UserID:       &userUUID,
 			TargetUserID: &user.ID,
 			Action:       "user_created",
-			ResourceType:  stringPtr("user"),
+			ResourceType: stringPtr("user"),
 			ResourceID:   &user.ID,
 			IPAddress:    stringPtr(c.IP()),
 			UserAgent:    stringPtr(c.Get("User-Agent")),
@@ -236,7 +242,7 @@ func DeleteUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 			UserID:       &userUUID,
 			TargetUserID: &targetUUID,
 			Action:       "user_deleted",
-			ResourceType:  stringPtr("user"),
+			ResourceType: stringPtr("user"),
 			ResourceID:   &targetUUID,
 			IPAddress:    stringPtr(c.IP()),
 			UserAgent:    stringPtr(c.Get("User-Agent")),
@@ -250,3 +256,233 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+// BulkImportUsers creates users in batch.
+func BulkImportUsers(userSvc *services.UserService, auditSvc *services.AuditService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
+
+		var body struct {
+			Rows []struct {
+				EmployeeID    string  `json:"employee_id"`
+				Email         string  `json:"email"`
+				Phone         *string `json:"phone"`
+				FirstName     string  `json:"first_name"`
+				LastName      string  `json:"last_name"`
+				DepartmentID  *string `json:"department_id"`
+				Designation   *string `json:"designation"`
+				DateOfJoining *string `json:"date_of_joining"`
+				Role          string  `json:"role"`
+				IsActive      *bool   `json:"is_active"`
+				Password      *string `json:"password"`
+				AuthMethod    *string `json:"auth_method"`
+			} `json:"rows"`
+		}
+		if err := c.BodyParser(&body); err != nil || len(body.Rows) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "rows array is required",
+			})
+		}
+		if len(body.Rows) > 1000 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "bulk import limit is 1000 rows per request",
+			})
+		}
+
+		type rowResult struct {
+			Row        int     `json:"row"`
+			EmployeeID *string `json:"employee_id,omitempty"`
+			UserID     *string `json:"user_id,omitempty"`
+			Error      *string `json:"error,omitempty"`
+		}
+		results := make([]rowResult, 0, len(body.Rows))
+		success := 0
+		failed := 0
+		now := time.Now()
+
+		for i, r := range body.Rows {
+			rowNum := i + 1
+			if strings.TrimSpace(r.EmployeeID) == "" || strings.TrimSpace(r.Email) == "" || strings.TrimSpace(r.FirstName) == "" || strings.TrimSpace(r.LastName) == "" {
+				errMsg := "employee_id, email, first_name and last_name are required"
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errMsg})
+				failed++
+				continue
+			}
+
+			role := r.Role
+			if role == "" {
+				role = "employee"
+			}
+			if actorRole != "org_admin" && role == "org_admin" {
+				errMsg := "only Org Admin can create Org Admin users"
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errMsg})
+				failed++
+				continue
+			}
+
+			authMethod := "password"
+			if r.AuthMethod != nil && *r.AuthMethod != "" {
+				authMethod = *r.AuthMethod
+			}
+			if role == "employee" {
+				authMethod = "sso"
+			}
+			needsPassword := role == "org_admin" || role == "hr" || role == "dept_manager"
+			if needsPassword && authMethod == "password" && (r.Password == nil || strings.TrimSpace(*r.Password) == "") {
+				errMsg := "password is required for admin/HR/manager users when auth_method is password"
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errMsg})
+				failed++
+				continue
+			}
+
+			var passwordHash *string
+			if r.Password != nil && strings.TrimSpace(*r.Password) != "" {
+				h, err := bcrypt.GenerateFromPassword([]byte(*r.Password), bcrypt.DefaultCost)
+				if err != nil {
+					errMsg := "failed to hash password"
+					results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errMsg})
+					failed++
+					continue
+				}
+				s := string(h)
+				passwordHash = &s
+			}
+
+			u := models.User{
+				EmployeeID:   strings.TrimSpace(r.EmployeeID),
+				Email:        strings.TrimSpace(r.Email),
+				Phone:        r.Phone,
+				FirstName:    strings.TrimSpace(r.FirstName),
+				LastName:     strings.TrimSpace(r.LastName),
+				Designation:  r.Designation,
+				Role:         role,
+				IsActive:     true,
+				PasswordHash: passwordHash,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}
+			if r.IsActive != nil {
+				u.IsActive = *r.IsActive
+			}
+			if r.DepartmentID != nil && *r.DepartmentID != "" {
+				depID, err := uuid.Parse(*r.DepartmentID)
+				if err == nil {
+					u.DepartmentID = &depID
+				}
+			}
+			u.DateOfJoining = now
+			if r.DateOfJoining != nil && strings.TrimSpace(*r.DateOfJoining) != "" {
+				if dt, err := parseJoiningDate(*r.DateOfJoining); err == nil {
+					u.DateOfJoining = dt
+				}
+			}
+
+			if err := userSvc.CreateUser(c.Context(), tenantID, &u); err != nil {
+				errText := err.Error()
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errText})
+				failed++
+				continue
+			}
+
+			tenantUUID := uuid.MustParse(tenantID)
+			actorUUID := uuid.MustParse(actorUserID)
+			_ = auditSvc.LogAction(c.Context(), &models.AuditLog{
+				TenantID:     &tenantUUID,
+				UserID:       &actorUUID,
+				TargetUserID: &u.ID,
+				Action:       "user_created",
+				ResourceType: stringPtr("user"),
+				ResourceID:   &u.ID,
+				IPAddress:    stringPtr(c.IP()),
+				UserAgent:    stringPtr(c.Get("User-Agent")),
+				CreatedAt:    now,
+			})
+
+			id := u.ID.String()
+			results = append(results, rowResult{
+				Row:        rowNum,
+				EmployeeID: &u.EmployeeID,
+				UserID:     &id,
+			})
+			success++
+		}
+
+		return c.JSON(fiber.Map{
+			"success_count": success,
+			"failed_count":  failed,
+			"results":       results,
+		})
+	}
+}
+
+// BulkUserAction applies activate/deactivate/delete to multiple users.
+func BulkUserAction(userSvc *services.UserService, auditSvc *services.AuditService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+
+		var body struct {
+			UserIDs []string `json:"user_ids"`
+			Action  string   `json:"action"` // activate | deactivate | delete
+		}
+		if err := c.BodyParser(&body); err != nil || len(body.UserIDs) == 0 || body.Action == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "user_ids and action are required",
+			})
+		}
+
+		action := strings.ToLower(strings.TrimSpace(body.Action))
+		var affected int64
+		var err error
+		switch action {
+		case "activate":
+			affected, err = userSvc.BulkSetActive(c.Context(), tenantID, body.UserIDs, true)
+		case "deactivate":
+			affected, err = userSvc.BulkSetActive(c.Context(), tenantID, body.UserIDs, false)
+		case "delete":
+			affected, err = userSvc.BulkSoftDelete(c.Context(), tenantID, body.UserIDs)
+		default:
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "action must be activate, deactivate, or delete",
+			})
+		}
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+
+		tenantUUID := uuid.MustParse(tenantID)
+		actorUUID := uuid.MustParse(actorUserID)
+		_ = auditSvc.LogAction(c.Context(), &models.AuditLog{
+			TenantID:     &tenantUUID,
+			UserID:       &actorUUID,
+			Action:       "user_updated",
+			ResourceType: stringPtr("user"),
+			Details: map[string]interface{}{
+				"bulk_action": action,
+				"count":       affected,
+			},
+			IPAddress: stringPtr(c.IP()),
+			UserAgent: stringPtr(c.Get("User-Agent")),
+			CreatedAt: time.Now(),
+		})
+
+		return c.JSON(fiber.Map{
+			"success":  true,
+			"action":   action,
+			"affected": affected,
+		})
+	}
+}
+
+func parseJoiningDate(v string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported date: %s", v)
+}

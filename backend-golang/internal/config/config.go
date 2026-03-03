@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -90,7 +91,7 @@ func Load() *Config {
 		KioskHMACSecret:    getEnv("KIOSK_HMAC_SECRET", ""),
 		HMACMaxSkewSeconds: parseInt(getEnv("HMAC_MAX_SKEW_SECONDS", "300"), 300),
 
-		OfflinePrivateKeyPEM: strings.ReplaceAll(getEnv("OFFLINE_PRIVATE_KEY_PEM", ""), `\\n`, "\n"),
+		OfflinePrivateKeyPEM: loadOfflinePrivateKeyPEM(),
 
 		HRMSWebhookSecret: getEnv("HRMS_WEBHOOK_SECRET", ""),
 	}
@@ -131,4 +132,38 @@ func parseInt(s string, def int) int {
 		return def
 	}
 	return n
+}
+
+func loadOfflinePrivateKeyPEM() string {
+	// 1) Prefer direct PEM in env (current behavior).
+	if pem := strings.TrimSpace(getEnv("OFFLINE_PRIVATE_KEY_PEM", "")); pem != "" {
+		return strings.ReplaceAll(pem, `\\n`, "\n")
+	}
+
+	// 2) Optional explicit file path env for easier local/dev setup.
+	// Example: OFFLINE_PRIVATE_KEY_PATH=../keys/kiosk_offline_private.pem
+	pathCandidates := []string{}
+	if p := strings.TrimSpace(getEnv("OFFLINE_PRIVATE_KEY_PATH", "")); p != "" {
+		pathCandidates = append(pathCandidates, p)
+	}
+
+	// 3) Sensible defaults for this repository layout.
+	pathCandidates = append(pathCandidates,
+		"../keys/kiosk_offline_private.pem",
+		"./keys/kiosk_offline_private.pem",
+	)
+
+	for _, p := range pathCandidates {
+		clean := filepath.Clean(p)
+		b, err := os.ReadFile(clean)
+		if err != nil {
+			continue
+		}
+		if len(b) == 0 {
+			continue
+		}
+		return string(b)
+	}
+
+	return ""
 }

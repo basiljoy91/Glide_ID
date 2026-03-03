@@ -102,6 +102,90 @@ func CreateHRMSIntegration(hrmsSvc *services.HRMSService) fiber.Handler {
 	}
 }
 
+// UpdateHRMSIntegration updates integration fields.
+func UpdateHRMSIntegration(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Integration ID is required"})
+		}
+
+		var body services.UpdateIntegrationInput
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		out, err := hrmsSvc.UpdateIntegrationByID(ctx, tenantID, id, body)
+		if err != nil {
+			if err.Error() == "integration not found" {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+			}
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(out)
+	}
+}
+
+// ToggleHRMSIntegration toggles integration active status.
+func ToggleHRMSIntegration(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+
+		var body struct {
+			IsActive bool `json:"is_active"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		out, err := hrmsSvc.ToggleIntegration(ctx, tenantID, id, body.IsActive)
+		if err != nil {
+			if err.Error() == "integration not found" {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+			}
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(out)
+	}
+}
+
+// TestHRMSIntegration runs connection/config checks.
+func TestHRMSIntegration(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Integration ID is required"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		out, err := hrmsSvc.TestIntegration(ctx, tenantID, id)
+		if err != nil {
+			if err.Error() == "integration not found" {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+			}
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(out)
+	}
+}
+
 // ExportTimesheet exports timesheet data
 func ExportTimesheet(hrmsSvc *services.HRMSService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -128,4 +212,3 @@ func ExportTimesheet(hrmsSvc *services.HRMSService) fiber.Handler {
 		return c.JSON(data)
 	}
 }
-

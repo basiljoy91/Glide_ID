@@ -29,12 +29,12 @@ func (s *UserService) CreateUser(ctx context.Context, tenantID string, user *mod
 		INSERT INTO users (
 			id, tenant_id, employee_id, email, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
-			shift_length_hours, role, is_active, data_privacy_consent, consent_date, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			shift_length_hours, role, password_hash, is_active, data_privacy_consent, consent_date, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 	`, user.ID, user.TenantID, user.EmployeeID, user.Email, user.Phone,
 		user.FirstName, user.LastName, user.DepartmentID, user.Designation,
 		user.DateOfJoining, user.ShiftStartTime, user.ShiftEndTime,
-		user.ShiftLengthHours, user.Role, user.IsActive, user.DataPrivacyConsent,
+		user.ShiftLengthHours, user.Role, user.PasswordHash, user.IsActive, user.DataPrivacyConsent,
 		user.ConsentDate, user.CreatedAt, user.UpdatedAt)
 
 	return err
@@ -118,13 +118,13 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
 			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
-		
+
 		if err != nil {
 			return nil, fmt.Errorf("user not found: %w", err)
 		}
 		return user, nil
 	}
-	
+
 	// Otherwise, search within specific tenant
 	user := &models.User{}
 	err := s.db.QueryRow(ctx, `
@@ -195,3 +195,56 @@ func (s *UserService) SoftDeleteUser(ctx context.Context, tenantID, userID strin
 	return nil
 }
 
+// BulkSetActive updates is_active for multiple users in one operation.
+func (s *UserService) BulkSetActive(ctx context.Context, tenantID string, userIDs []string, active bool) (int64, error) {
+	ids := make([]uuid.UUID, 0, len(userIDs))
+	for _, id := range userIDs {
+		parsed, err := uuid.Parse(id)
+		if err != nil {
+			return 0, fmt.Errorf("invalid user id: %s", id)
+		}
+		ids = append(ids, parsed)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	tag, err := s.db.Exec(ctx, `
+		UPDATE users
+		SET is_active = $1, updated_at = NOW()
+		WHERE tenant_id = $2
+		  AND id = ANY($3::uuid[])
+		  AND deleted_at IS NULL
+	`, active, tenantID, ids)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update user status: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// BulkSoftDelete soft-deletes multiple users.
+func (s *UserService) BulkSoftDelete(ctx context.Context, tenantID string, userIDs []string) (int64, error) {
+	ids := make([]uuid.UUID, 0, len(userIDs))
+	for _, id := range userIDs {
+		parsed, err := uuid.Parse(id)
+		if err != nil {
+			return 0, fmt.Errorf("invalid user id: %s", id)
+		}
+		ids = append(ids, parsed)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	tag, err := s.db.Exec(ctx, `
+		UPDATE users
+		SET deleted_at = NOW(), is_active = false, updated_at = NOW()
+		WHERE tenant_id = $1
+		  AND id = ANY($2::uuid[])
+		  AND deleted_at IS NULL
+	`, tenantID, ids)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete users: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

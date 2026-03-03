@@ -3,6 +3,7 @@ package handlers
 import (
 	"enterprise-attendance-api/internal/middleware"
 	"enterprise-attendance-api/internal/services"
+	"log"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -30,6 +31,7 @@ func KioskOfflineSync(svc *services.AttendanceService) fiber.Handler {
 
 		resp, err := svc.ProcessOfflineSync(c.Context(), tenantID, kioskCodeStr, body.EncryptedPayload)
 		if err != nil {
+			log.Printf("kiosk offline sync failed tenant=%s kiosk=%s err=%v", tenantID, kioskCodeStr, err)
 			// If private key isn't configured, surface as 501 to make it obvious.
 			if err.Error() == "offline decryption not configured" {
 				return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{"error": err.Error()})
@@ -40,4 +42,3 @@ func KioskOfflineSync(svc *services.AttendanceService) fiber.Handler {
 		return c.JSON(resp)
 	}
 }
-

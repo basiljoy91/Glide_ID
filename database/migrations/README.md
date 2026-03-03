@@ -45,6 +45,8 @@ Run migrations in this order:
 1. `schema.sql` (main schema)
 2. `001_supabase_auth_integration.sql`
 3. `002_update_rls_for_supabase.sql`
+4. `003_schedule_purge_function.sql`
+5. `004_billing_core.sql`
 
 ## Verifying Migrations
 
@@ -94,5 +96,4 @@ To rollback a migration:
 1. Create a new migration file with rollback SQL
 2. Or manually reverse the changes in SQL Editor
 3. Always test rollbacks on a development database first
-
 

@@ -129,7 +129,49 @@ export default function OrgAdminDashboardPage() {
               : `${metrics.healthyKiosks} healthy, ${metrics.offlineKiosks} offline`
           }
         />
+        <DataCard
+          title="Total Attendance Logs"
+          value={isLoading || !metrics ? '—' : metrics.totalAttendanceLogs.toLocaleString()}
+          subtitle="Historical logs captured for this tenant"
+        />
       </DataCardGrid>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="bg-card border border-border rounded-lg p-4 shadow-sm">
+          <div className="text-sm font-medium text-muted-foreground mb-2">Operations Snapshot</div>
+          <div className="space-y-1 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Employees</span>
+              <span className="font-medium">{isLoading || !metrics ? '—' : metrics.totalEmployees}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Check-ins today</span>
+              <span className="font-medium">{isLoading || !metrics ? '—' : metrics.todayCheckIns}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Offline kiosks</span>
+              <span className="font-medium">{isLoading || !metrics ? '—' : metrics.offlineKiosks}</span>
+            </div>
+          </div>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-4 shadow-sm lg:col-span-2">
+          <div className="text-sm font-medium text-muted-foreground mb-3">Quick Actions</div>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/admin/org/users">
+              <Button variant="outline" size="sm">Manage employees</Button>
+            </Link>
+            <Link href="/admin/org/kiosks">
+              <Button variant="outline" size="sm">Review kiosk health</Button>
+            </Link>
+            <Link href="/admin/org/reports/attendance">
+              <Button variant="outline" size="sm">Run attendance report</Button>
+            </Link>
+            <Link href="/admin/org/reviews/anomalies">
+              <Button variant="outline" size="sm">Resolve anomalies</Button>
+            </Link>
+          </div>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <div className="bg-card border border-border rounded-lg p-4 shadow-sm lg:col-span-2">
@@ -173,4 +215,3 @@ export default function OrgAdminDashboardPage() {
     </div>
   )
 }
-

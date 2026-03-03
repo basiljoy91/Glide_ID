@@ -269,4 +269,3 @@ func RotateKioskSecret(db *pgxpool.Pool) fiber.Handler {
 		})
 	}
 }
-

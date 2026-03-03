@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -44,9 +46,17 @@ type MQTTClient interface {
 
 func NewAttendanceService(db *pgxpool.Pool, mqttClient MQTTClient, aiServiceURL, aiServiceAPIKey string, offlinePrivateKeyPEM string) *AttendanceService {
 	var pk *rsa.PrivateKey
-	if strings.TrimSpace(offlinePrivateKeyPEM) != "" {
-		if parsed, err := parseRSAPrivateKeyPEM([]byte(offlinePrivateKeyPEM)); err == nil {
+	if pemRaw := strings.TrimSpace(offlinePrivateKeyPEM); pemRaw != "" {
+		if parsed, err := parseRSAPrivateKeyPEM([]byte(pemRaw)); err == nil {
 			pk = parsed
+		}
+	}
+	if pk == nil {
+		// Fallback for local/dev: load private key from file candidates.
+		if pemFromFile := loadOfflinePrivateKeyFromFileCandidates(); pemFromFile != "" {
+			if parsed, err := parseRSAPrivateKeyPEM([]byte(pemFromFile)); err == nil {
+				pk = parsed
+			}
 		}
 	}
 	return &AttendanceService{
@@ -56,6 +66,37 @@ func NewAttendanceService(db *pgxpool.Pool, mqttClient MQTTClient, aiServiceURL,
 		aiServiceAPIKey:   aiServiceAPIKey,
 		offlinePrivateKey: pk,
 	}
+}
+
+func loadOfflinePrivateKeyFromFileCandidates() string {
+	candidates := []string{}
+
+	if envPath := strings.TrimSpace(os.Getenv("OFFLINE_PRIVATE_KEY_PATH")); envPath != "" {
+		candidates = append(candidates, envPath)
+	}
+
+	candidates = append(candidates,
+		"../keys/kiosk_offline_private.pem",
+		"./keys/kiosk_offline_private.pem",
+	)
+
+	if exePath, err := os.Executable(); err == nil && exePath != "" {
+		exeDir := filepath.Dir(exePath)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "keys", "kiosk_offline_private.pem"),
+			filepath.Join(exeDir, "..", "keys", "kiosk_offline_private.pem"),
+		)
+	}
+
+	for _, p := range candidates {
+		clean := filepath.Clean(p)
+		b, err := os.ReadFile(clean)
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		return string(b)
+	}
+	return ""
 }
 
 type offlineEnvelope struct {
@@ -125,6 +166,10 @@ func (s *AttendanceService) decryptOfflinePayload(encryptedPayload string) ([]by
 		return nil, fmt.Errorf("decrypt payload failed: %w", err)
 	}
 	return plain, nil
+}
+
+func (s *AttendanceService) IsOfflineDecryptionConfigured() bool {
+	return s.offlinePrivateKey != nil
 }
 
 type OfflineSyncDecrypted struct {
@@ -206,14 +251,17 @@ func (s *AttendanceService) VectorizeAndStore(ctx context.Context, tenantID, use
 
 // CheckInRequest represents a check-in request from kiosk
 type CheckInRequest struct {
-	ImageBase64        string  `json:"image_base64"`
-	KioskCode          string  `json:"kiosk_code"`
-	LocalTime          *string `json:"local_time"`
-	MonotonicOffsetMs  *int64  `json:"monotonic_offset_ms"`
-	VerificationMethod string  `json:"verification_method"` // "biometric", "pin"
-	PinCode            *string `json:"pin_code"`
-	IPAddress          *string `json:"ip_address"`
-	HasConsented       *bool   `json:"has_consented"`
+	ImageBase64        string   `json:"image_base64"`
+	KioskCode          string   `json:"kiosk_code"`
+	LocalTime          *string  `json:"local_time"`
+	MonotonicOffsetMs  *int64   `json:"monotonic_offset_ms"`
+	VerificationMethod string   `json:"verification_method"` // "biometric", "pin"
+	PinCode            *string  `json:"pin_code"`
+	IPAddress          *string  `json:"ip_address"`
+	HasConsented       *bool    `json:"has_consented"`
+	LivenessType       *string  `json:"liveness_type"`  // "active" | "passive"
+	ChallengeType      *string  `json:"challenge_type"` // optional challenge
+	FramesBase64       []string `json:"frames_base64"`  // optional active challenge frames
 }
 
 // CheckInResponse represents the response
@@ -275,6 +323,57 @@ func (s *AttendanceService) processBiometricCheckIn(
 	punchTime time.Time,
 	mqttTopic *string,
 ) (*CheckInResponse, error) {
+	// Enforce AI liveness checks before face matching to block spoof attacks.
+	livenessType := "passive"
+	if req.LivenessType != nil && *req.LivenessType != "" {
+		livenessType = *req.LivenessType
+	}
+	challengeType := "any"
+	if req.ChallengeType != nil && *req.ChallengeType != "" {
+		challengeType = *req.ChallengeType
+	}
+	livenessReq := map[string]interface{}{
+		"image_base64":   req.ImageBase64,
+		"liveness_type":  livenessType,
+		"challenge_type": challengeType,
+	}
+	if len(req.FramesBase64) > 0 {
+		livenessReq["frames_base64"] = req.FramesBase64
+	}
+	livenessJSON, _ := json.Marshal(livenessReq)
+	livenessHTTPReq, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/liveness", bytes.NewBuffer(livenessJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create liveness request: %w", err)
+	}
+	livenessHTTPReq.Header.Set("Content-Type", "application/json")
+	livenessHTTPReq.Header.Set("X-API-Key", s.aiServiceAPIKey)
+
+	livenessClient := &http.Client{Timeout: 8 * time.Second}
+	livenessResp, err := livenessClient.Do(livenessHTTPReq)
+	if err != nil {
+		return nil, fmt.Errorf("liveness service request failed: %w", err)
+	}
+	defer livenessResp.Body.Close()
+	if livenessResp.StatusCode != http.StatusOK {
+		return &CheckInResponse{
+			Success: false,
+			Message: "Liveness verification failed",
+		}, nil
+	}
+	var livenessBody struct {
+		IsLive        bool    `json:"is_live"`
+		LivenessScore float64 `json:"liveness_score"`
+	}
+	if err := json.NewDecoder(livenessResp.Body).Decode(&livenessBody); err != nil {
+		return nil, fmt.Errorf("failed to decode liveness response: %w", err)
+	}
+	if !livenessBody.IsLive {
+		return &CheckInResponse{
+			Success: false,
+			Message: "Spoof risk detected. Please retry live verification.",
+		}, nil
+	}
+
 	// Call AI service for 1:N comparison
 	aiReq := map[string]interface{}{
 		"image_base64": req.ImageBase64,

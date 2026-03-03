@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"enterprise-attendance-api/internal/middleware"
@@ -55,16 +57,18 @@ func GetCheckins7d(db *pgxpool.Pool) fiber.Handler {
 }
 
 type anomalyRow struct {
-	ID                 uuid.UUID  `json:"id"`
-	PunchTime          time.Time  `json:"punch_time"`
-	Status             string     `json:"status"`
-	VerificationMethod string     `json:"verification_method"`
-	AnomalyReason      *string    `json:"anomaly_reason"`
-	UserID             uuid.UUID  `json:"user_id"`
-	EmployeeID         string     `json:"employee_id"`
-	FirstName          string     `json:"first_name"`
-	LastName           string     `json:"last_name"`
-	KioskCode          *string    `json:"kiosk_code"`
+	ID                 uuid.UUID `json:"id"`
+	PunchTime          time.Time `json:"punch_time"`
+	Status             string    `json:"status"`
+	VerificationMethod string    `json:"verification_method"`
+	AnomalyDetected    bool      `json:"anomaly_detected"`
+	AnomalyReason      *string   `json:"anomaly_reason"`
+	Notes              *string   `json:"notes"`
+	UserID             uuid.UUID `json:"user_id"`
+	EmployeeID         string    `json:"employee_id"`
+	FirstName          string    `json:"first_name"`
+	LastName           string    `json:"last_name"`
+	KioskCode          *string   `json:"kiosk_code"`
 }
 
 // ListAnomalies lists recent anomalies for the tenant.
@@ -73,30 +77,79 @@ func ListAnomalies(db *pgxpool.Pool) fiber.Handler {
 		tenantID := middleware.GetTenantID(c)
 		limit := c.QueryInt("limit", 20)
 		offset := c.QueryInt("offset", 0)
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+		searchQ := strings.TrimSpace(c.Query("q"))
+		method := strings.TrimSpace(c.Query("method"))
+		state := strings.ToLower(strings.TrimSpace(c.Query("state", "unresolved"))) // unresolved | resolved | all
+		sort := strings.ToLower(strings.TrimSpace(c.Query("sort", "desc")))
 		if limit <= 0 || limit > 200 {
 			limit = 20
 		}
 		if offset < 0 {
 			offset = 0
 		}
+		if state != "unresolved" && state != "resolved" && state != "all" {
+			state = "unresolved"
+		}
+		if sort != "asc" {
+			sort = "desc"
+		}
+		if startDate != "" {
+			if _, err := time.Parse("2006-01-02", startDate); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid start_date"})
+			}
+		}
+		if endDate != "" {
+			if _, err := time.Parse("2006-01-02", endDate); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid end_date"})
+			}
+		}
 
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
-		rows, err := db.Query(ctx, `
+		args := []interface{}{tenantID}
+		where := "al.tenant_id = $1"
+		switch state {
+		case "unresolved":
+			where += " AND al.anomaly_detected = true"
+		case "resolved":
+			where += " AND al.anomaly_detected = false AND al.anomaly_reason IS NOT NULL"
+		}
+		if startDate != "" {
+			where += fmt.Sprintf(" AND al.punch_time::date >= $%d::date", len(args)+1)
+			args = append(args, startDate)
+		}
+		if endDate != "" {
+			where += fmt.Sprintf(" AND al.punch_time::date <= $%d::date", len(args)+1)
+			args = append(args, endDate)
+		}
+		if method != "" {
+			where += fmt.Sprintf(" AND al.verification_method = $%d", len(args)+1)
+			args = append(args, method)
+		}
+		if searchQ != "" {
+			where += fmt.Sprintf(" AND (u.employee_id ILIKE $%d OR u.first_name ILIKE $%d OR u.last_name ILIKE $%d)", len(args)+1, len(args)+1, len(args)+1)
+			args = append(args, "%"+searchQ+"%")
+		}
+		args = append(args, limit, offset)
+		limitArg := len(args) - 1
+		offsetArg := len(args)
+
+		rows, err := db.Query(ctx, fmt.Sprintf(`
 			SELECT
-				al.id, al.punch_time, al.status, al.verification_method, al.anomaly_reason,
+				al.id, al.punch_time, al.status, al.verification_method, al.anomaly_detected, al.anomaly_reason, al.notes,
 				al.user_id,
 				u.employee_id, u.first_name, u.last_name,
 				k.code as kiosk_code
 			FROM attendance_logs al
 			JOIN users u ON u.id = al.user_id
 			LEFT JOIN kiosks k ON k.id = al.kiosk_id
-			WHERE al.tenant_id = $1
-			  AND al.anomaly_detected = true
-			ORDER BY al.punch_time DESC
-			LIMIT $2 OFFSET $3
-		`, tenantID, limit, offset)
+			WHERE %s
+			ORDER BY al.punch_time %s
+			LIMIT $%d OFFSET $%d
+		`, where, sort, limitArg, offsetArg), args...)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list anomalies"})
 		}
@@ -105,7 +158,7 @@ func ListAnomalies(db *pgxpool.Pool) fiber.Handler {
 		out := make([]anomalyRow, 0)
 		for rows.Next() {
 			var r anomalyRow
-			if err := rows.Scan(&r.ID, &r.PunchTime, &r.Status, &r.VerificationMethod, &r.AnomalyReason, &r.UserID, &r.EmployeeID, &r.FirstName, &r.LastName, &r.KioskCode); err != nil {
+			if err := rows.Scan(&r.ID, &r.PunchTime, &r.Status, &r.VerificationMethod, &r.AnomalyDetected, &r.AnomalyReason, &r.Notes, &r.UserID, &r.EmployeeID, &r.FirstName, &r.LastName, &r.KioskCode); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read anomalies"})
 			}
 			out = append(out, r)
@@ -127,7 +180,7 @@ func GetAnomaly(db *pgxpool.Pool) fiber.Handler {
 		var r anomalyRow
 		err := db.QueryRow(ctx, `
 			SELECT
-				al.id, al.punch_time, al.status, al.verification_method, al.anomaly_reason,
+				al.id, al.punch_time, al.status, al.verification_method, al.anomaly_detected, al.anomaly_reason, al.notes,
 				al.user_id,
 				u.employee_id, u.first_name, u.last_name,
 				k.code as kiosk_code
@@ -137,7 +190,7 @@ func GetAnomaly(db *pgxpool.Pool) fiber.Handler {
 			WHERE al.tenant_id = $1
 			  AND al.id = $2
 		`, tenantID, id).Scan(
-			&r.ID, &r.PunchTime, &r.Status, &r.VerificationMethod, &r.AnomalyReason,
+			&r.ID, &r.PunchTime, &r.Status, &r.VerificationMethod, &r.AnomalyDetected, &r.AnomalyReason, &r.Notes,
 			&r.UserID, &r.EmployeeID, &r.FirstName, &r.LastName, &r.KioskCode,
 		)
 		if err != nil {
@@ -145,6 +198,57 @@ func GetAnomaly(db *pgxpool.Pool) fiber.Handler {
 		}
 
 		return c.JSON(r)
+	}
+}
+
+// BulkResolveAnomalies resolves multiple anomalies in one operation.
+func BulkResolveAnomalies(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		var body struct {
+			IDs  []string `json:"ids"`
+			Note string   `json:"note"`
+		}
+		if err := c.BodyParser(&body); err != nil || len(body.IDs) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ids array is required"})
+		}
+		if len(body.IDs) > 500 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "bulk resolve limit is 500"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 7*time.Second)
+		defer cancel()
+
+		ids := make([]uuid.UUID, 0, len(body.IDs))
+		for _, id := range body.IDs {
+			p, err := uuid.Parse(id)
+			if err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid anomaly id: " + id})
+			}
+			ids = append(ids, p)
+		}
+
+		tag, err := db.Exec(ctx, `
+			UPDATE attendance_logs
+			SET
+				anomaly_detected = false,
+				notes = CASE
+					WHEN $3 = '' THEN notes
+					WHEN notes IS NULL OR notes = '' THEN '[Resolved] ' || $3
+					ELSE notes || E'\n' || '[Resolved] ' || $3
+				END,
+				updated_at = NOW()
+			WHERE tenant_id = $1
+			  AND id = ANY($2::uuid[])
+		`, tenantID, ids, body.Note)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to bulk resolve anomalies"})
+		}
+
+		return c.JSON(fiber.Map{
+			"success":  true,
+			"affected": tag.RowsAffected(),
+		})
 	}
 }
 
@@ -190,8 +294,8 @@ type attendanceReportDay struct {
 }
 
 type attendanceReportResponse struct {
-	StartDate string              `json:"start_date"`
-	EndDate   string              `json:"end_date"`
+	StartDate string                `json:"start_date"`
+	EndDate   string                `json:"end_date"`
 	Days      []attendanceReportDay `json:"days"`
 	Totals    struct {
 		CheckIns  int `json:"check_ins"`
@@ -263,4 +367,3 @@ func GetAttendanceReport(db *pgxpool.Pool) fiber.Handler {
 		return c.JSON(resp)
 	}
 }
-

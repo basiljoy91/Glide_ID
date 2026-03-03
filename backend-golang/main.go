@@ -45,6 +45,10 @@ func main() {
 	// Initialize services
 	authService := services.NewAuthService(cfg.JWTSecret, cfg.JWTExpiry)
 	attendanceService := services.NewAttendanceService(db.Pool, mqttClient, cfg.AIServiceURL, cfg.AIServiceAPIKey, cfg.OfflinePrivateKeyPEM)
+	if !attendanceService.IsOfflineDecryptionConfigured() {
+		log.Println("Warning: offline decryption key not loaded; /api/v1/kiosk/offline/sync will return 501")
+		log.Println("Set OFFLINE_PRIVATE_KEY_PEM or OFFLINE_PRIVATE_KEY_PATH (example: ../keys/kiosk_offline_private.pem)")
+	}
 	userService := services.NewUserService(db.Pool)
 	hrmsService := services.NewHRMSService(db.Pool)
 	auditService := services.NewAuditService(db.Pool)
@@ -95,4 +99,3 @@ func main() {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
-

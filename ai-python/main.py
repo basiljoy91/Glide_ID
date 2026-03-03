@@ -96,6 +96,8 @@ class CompareMultipleResponse(BaseModel):
 class LivenessRequest(BaseModel):
     image_base64: str = Field(..., description="Base64 encoded image")
     liveness_type: str = Field("passive", description="'active' or 'passive'")
+    frames_base64: Optional[List[str]] = Field(None, description="Optional additional frames for active challenge")
+    challenge_type: Optional[str] = Field("any", description="active challenge: blink, turn_left, turn_right, move_closer, move_away, any")
 
 
 class LivenessResponse(BaseModel):
@@ -103,6 +105,7 @@ class LivenessResponse(BaseModel):
     liveness_score: float
     confidence: float
     method: str
+    details: Optional[dict] = None
 
 
 # ============================================================================
@@ -496,27 +499,38 @@ async def detect_liveness(
     - **liveness_type**: 'active' (requires movement) or 'passive' (texture analysis)
     """
     try:
-        import base64
-        from io import BytesIO
-        from PIL import Image
-        
-        # Decode image
-        image_data = base64.b64decode(request.image_base64)
-        image = Image.open(BytesIO(image_data))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Detect liveness
-        is_live, score, confidence = await face_recognition.detect_liveness(
-            image,
-            liveness_type=request.liveness_type
+        def decode_b64_image(raw: str) -> Image.Image:
+            image_b64 = raw.strip()
+            if image_b64.startswith("data:") and "," in image_b64:
+                image_b64 = image_b64.split(",", 1)[1]
+            image_data = base64.b64decode(image_b64)
+            img = Image.open(BytesIO(image_data))
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            return img
+
+        image = decode_b64_image(request.image_base64)
+        extra_frames: List[Image.Image] = []
+        if request.frames_base64:
+            for raw in request.frames_base64:
+                if not raw:
+                    continue
+                extra_frames.append(decode_b64_image(raw))
+
+        # Detect liveness with passive + optional active temporal challenge checks
+        is_live, score, confidence, details = await face_recognition.detect_liveness(
+            image=image,
+            liveness_type=request.liveness_type,
+            frames=extra_frames,
+            challenge_type=request.challenge_type or "any"
         )
         
         return LivenessResponse(
             is_live=is_live,
             liveness_score=float(score),
             confidence=float(confidence),
-            method=request.liveness_type
+            method=request.liveness_type,
+            details=details
         )
         
     except HTTPException:
@@ -647,4 +661,3 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         log_level="info"
     )
-

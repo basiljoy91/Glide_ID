@@ -50,6 +50,13 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		superAdmin.Use(middleware.RequireRole("super_admin"))
 		{
 			superAdmin.Get("/metrics", handlers.GetSuperAdminMetrics(svc.Attendance.GetDB()))
+			superAdmin.Get("/organizations", handlers.ListSuperAdminOrganizations(svc.Attendance.GetDB()))
+			superAdmin.Patch("/organizations/:id/subscription", handlers.UpdateOrganizationSubscription(svc.Attendance.GetDB()))
+			superAdmin.Patch("/organizations/:id/status", handlers.SetOrganizationStatus(svc.Attendance.GetDB()))
+			superAdmin.Get("/billing/overview", handlers.GetBillingOverview(svc.Attendance.GetDB()))
+			superAdmin.Get("/billing/invoices", handlers.ListBillingInvoices(svc.Attendance.GetDB()))
+			superAdmin.Post("/billing/invoices", handlers.CreateBillingInvoice(svc.Attendance.GetDB()))
+			superAdmin.Patch("/billing/invoices/:id/mark-paid", handlers.MarkBillingInvoicePaid(svc.Attendance.GetDB()))
 		}
 
 		// Attendance
@@ -67,6 +74,8 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			users.Get("/", handlers.ListUsers(svc.User))
 			users.Get("/:id", handlers.GetUser(svc.User))
 			users.Post("/", handlers.CreateUser(svc.User, svc.Audit))
+			users.Post("/bulk/import", handlers.BulkImportUsers(svc.User, svc.Audit))
+			users.Post("/bulk/action", handlers.BulkUserAction(svc.User, svc.Audit))
 			users.Put("/:id", handlers.UpdateUser(svc.User, svc.Audit))
 			users.Delete("/:id", handlers.DeleteUser(svc.User, svc.Audit))
 			users.Post("/:id/enroll-link", handlers.GenerateEnrollToken(svc.Auth))
@@ -99,6 +108,9 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		{
 			hrms.Get("/integrations", handlers.ListHRMSIntegrations(svc.HRMS))
 			hrms.Post("/integrations", handlers.CreateHRMSIntegration(svc.HRMS))
+			hrms.Put("/integrations/:id", handlers.UpdateHRMSIntegration(svc.HRMS))
+			hrms.Patch("/integrations/:id/toggle", handlers.ToggleHRMSIntegration(svc.HRMS))
+			hrms.Post("/integrations/:id/test", handlers.TestHRMSIntegration(svc.HRMS))
 			hrms.Post("/webhooks/:provider", handlers.ProcessHRMSWebhook(svc.HRMS))
 			hrms.Post("/export/timesheet", handlers.ExportTimesheet(svc.HRMS))
 		}
@@ -119,6 +131,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			reports.Get("/anomalies", handlers.ListAnomalies(svc.Attendance.GetDB()))
 			reports.Get("/anomalies/:id", handlers.GetAnomaly(svc.Attendance.GetDB()))
 			reports.Patch("/anomalies/:id/resolve", handlers.ResolveAnomaly(svc.Attendance.GetDB()))
+			reports.Patch("/anomalies/bulk-resolve", handlers.BulkResolveAnomalies(svc.Attendance.GetDB()))
 			reports.Get("/attendance", handlers.GetAttendanceReport(svc.Attendance.GetDB()))
 			reports.Post("/export", handlers.ExportReport(svc.Attendance))
 		}
@@ -130,4 +143,3 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		webhooks.Post("/:provider", handlers.HRMSWebhook(svc.HRMS))
 	}
 }
-

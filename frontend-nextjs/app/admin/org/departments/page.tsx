@@ -28,6 +28,8 @@ export default function OrgDepartmentsPage() {
   const [code, setCode] = useState('')
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editing, setEditing] = useState<Partial<Department>>({})
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -124,6 +126,54 @@ export default function OrgDepartmentsPage() {
     }
   }
 
+  const beginEdit = (d: Department) => {
+    setEditingId(d.id)
+    setEditing({
+      name: d.name,
+      code: d.code || '',
+      description: d.description || '',
+    })
+  }
+
+  const cancelEdit = () => {
+    setEditingId(null)
+    setEditing({})
+  }
+
+  const saveEdit = async (id: string) => {
+    if (!editing.name?.trim()) {
+      toast.error('Department name is required')
+      return
+    }
+    try {
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/departments/${id}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            name: editing.name,
+            code: editing.code || null,
+            description: editing.description || null,
+          }),
+        }
+      )
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update department')
+      }
+      toast.success('Department updated')
+      setEditingId(null)
+      setEditing({})
+      await fetchDepartments()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update department')
+    }
+  }
+
   if (!isAuthenticated || !user) return null
 
   return (
@@ -211,18 +261,65 @@ export default function OrgDepartmentsPage() {
             <tbody>
               {departments.map((d) => (
                 <tr key={d.id} className="border-b last:border-b-0">
-                  <td className="px-4 py-2">{d.name}</td>
-                  <td className="px-4 py-2">{d.code || '-'}</td>
+                  <td className="px-4 py-2">
+                    {editingId === d.id ? (
+                      <Input
+                        value={editing.name || ''}
+                        onChange={(e) => setEditing((prev) => ({ ...prev, name: e.target.value }))}
+                      />
+                    ) : (
+                      d.name
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    {editingId === d.id ? (
+                      <Input
+                        value={editing.code || ''}
+                        onChange={(e) => setEditing((prev) => ({ ...prev, code: e.target.value }))}
+                      />
+                    ) : (
+                      d.code || '-'
+                    )}
+                  </td>
                   <td className="px-4 py-2 hidden md:table-cell">
-                    {d.description || '-'}
+                    {editingId === d.id ? (
+                      <Input
+                        value={editing.description || ''}
+                        onChange={(e) =>
+                          setEditing((prev) => ({ ...prev, description: e.target.value }))
+                        }
+                      />
+                    ) : (
+                      d.description || '-'
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      onClick={() => handleDelete(d.id)}
-                      className="text-xs text-destructive hover:underline"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex justify-end gap-2">
+                      {editingId === d.id ? (
+                        <>
+                          <Button size="sm" onClick={() => void saveEdit(d.id)}>
+                            Save
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={cancelEdit}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button size="sm" variant="outline" onClick={() => beginEdit(d)}>
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDelete(d.id)}
+                            className="text-destructive"
+                          >
+                            Delete
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -233,4 +330,3 @@ export default function OrgDepartmentsPage() {
     </div>
   )
 }
-

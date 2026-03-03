@@ -84,6 +84,14 @@ type UpsertIntegrationInput struct {
 	IsActive  *bool                  `json:"is_active"`
 }
 
+type UpdateIntegrationInput struct {
+	Provider  *string                `json:"provider"`
+	APIKey    *string                `json:"api_key"`
+	APISecret *string                `json:"api_secret"`
+	Config    map[string]interface{} `json:"config"`
+	IsActive  *bool                  `json:"is_active"`
+}
+
 // UpsertIntegration inserts or updates an integration for (tenant_id, provider).
 func (s *HRMSService) UpsertIntegration(ctx context.Context, tenantID string, in UpsertIntegrationInput) (*HRMSIntegrationPublic, error) {
 	if in.Provider == "" || in.APIKey == "" {
@@ -192,6 +200,167 @@ func (s *HRMSService) processGenericWebhook(ctx context.Context, tenantID string
 	return nil
 }
 
+// UpdateIntegrationByID updates an integration row by id for a tenant.
+func (s *HRMSService) UpdateIntegrationByID(ctx context.Context, tenantID, integrationID string, in UpdateIntegrationInput) (*HRMSIntegrationPublic, error) {
+	var current struct {
+		Provider  string
+		APIKey    string
+		APISecret *string
+		IsActive  bool
+		Config    map[string]interface{}
+	}
+
+	err := s.db.QueryRow(ctx, `
+		SELECT provider, api_key, api_secret, is_active, config
+		FROM hrms_integrations
+		WHERE id = $1 AND tenant_id = $2
+	`, integrationID, tenantID).Scan(&current.Provider, &current.APIKey, &current.APISecret, &current.IsActive, &current.Config)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("integration not found")
+		}
+		return nil, err
+	}
+
+	provider := current.Provider
+	if in.Provider != nil && *in.Provider != "" {
+		provider = *in.Provider
+	}
+	apiKey := current.APIKey
+	if in.APIKey != nil && *in.APIKey != "" {
+		apiKey = *in.APIKey
+	}
+	apiSecret := current.APISecret
+	if in.APISecret != nil {
+		if *in.APISecret == "" {
+			apiSecret = nil
+		} else {
+			apiSecret = in.APISecret
+		}
+	}
+	config := current.Config
+	if in.Config != nil {
+		config = in.Config
+	}
+	isActive := current.IsActive
+	if in.IsActive != nil {
+		isActive = *in.IsActive
+	}
+
+	var m models.HRMSIntegration
+	err = s.db.QueryRow(ctx, `
+		UPDATE hrms_integrations
+		SET
+			provider = $1,
+			api_key = $2,
+			api_secret = $3,
+			config = $4,
+			is_active = $5,
+			updated_at = NOW()
+		WHERE id = $6 AND tenant_id = $7
+		RETURNING id, tenant_id, provider, webhook_url, config, is_active, last_sync_at, created_at, updated_at
+	`, provider, apiKey, apiSecret, config, isActive, integrationID, tenantID).Scan(
+		&m.ID, &m.TenantID, &m.Provider, &m.WebhookURL, &m.Config, &m.IsActive, &m.LastSyncAt, &m.CreatedAt, &m.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	out := toPublicIntegration(&m)
+	return &out, nil
+}
+
+// ToggleIntegration sets active state for integration.
+func (s *HRMSService) ToggleIntegration(ctx context.Context, tenantID, integrationID string, isActive bool) (*HRMSIntegrationPublic, error) {
+	var m models.HRMSIntegration
+	err := s.db.QueryRow(ctx, `
+		UPDATE hrms_integrations
+		SET is_active = $1, updated_at = NOW()
+		WHERE id = $2 AND tenant_id = $3
+		RETURNING id, tenant_id, provider, webhook_url, config, is_active, last_sync_at, created_at, updated_at
+	`, isActive, integrationID, tenantID).Scan(
+		&m.ID, &m.TenantID, &m.Provider, &m.WebhookURL, &m.Config, &m.IsActive, &m.LastSyncAt, &m.CreatedAt, &m.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("integration not found")
+		}
+		return nil, err
+	}
+	out := toPublicIntegration(&m)
+	return &out, nil
+}
+
+// TestIntegration performs configuration validation and updates last_sync_at when checks pass.
+func (s *HRMSService) TestIntegration(ctx context.Context, tenantID, integrationID string) (map[string]interface{}, error) {
+	var provider string
+	var isActive bool
+	var cfg map[string]interface{}
+
+	err := s.db.QueryRow(ctx, `
+		SELECT provider, is_active, config
+		FROM hrms_integrations
+		WHERE id = $1 AND tenant_id = $2
+	`, integrationID, tenantID).Scan(&provider, &isActive, &cfg)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("integration not found")
+		}
+		return nil, err
+	}
+
+	checks := []map[string]interface{}{}
+	addCheck := func(name string, ok bool, detail string) {
+		checks = append(checks, map[string]interface{}{
+			"name":   name,
+			"ok":     ok,
+			"detail": detail,
+		})
+	}
+
+	addCheck("integration_active", isActive, "Integration should be active to receive webhooks")
+
+	switch provider {
+	case "workday":
+		_, hasTenant := cfg["tenant"]
+		_, hasEndpoint := cfg["endpoint"]
+		addCheck("workday_config", hasTenant || hasEndpoint, "Expected config.tenant or config.endpoint")
+	case "sap":
+		_, hasEndpoint := cfg["endpoint"]
+		_, hasCompany := cfg["company_code"]
+		addCheck("sap_config", hasEndpoint || hasCompany, "Expected config.endpoint or config.company_code")
+	case "bamboohr":
+		_, hasSubdomain := cfg["subdomain"]
+		_, hasEndpoint := cfg["endpoint"]
+		addCheck("bamboohr_config", hasSubdomain || hasEndpoint, "Expected config.subdomain or config.endpoint")
+	default:
+		_, hasEndpoint := cfg["endpoint"]
+		addCheck("custom_config", hasEndpoint, "Expected config.endpoint")
+	}
+
+	passed := true
+	for _, c := range checks {
+		if ok, _ := c["ok"].(bool); !ok {
+			passed = false
+			break
+		}
+	}
+
+	if passed {
+		_, _ = s.db.Exec(ctx, `
+			UPDATE hrms_integrations
+			SET last_sync_at = NOW(), updated_at = NOW()
+			WHERE id = $1 AND tenant_id = $2
+		`, integrationID, tenantID)
+	}
+
+	return map[string]interface{}{
+		"ok":      passed,
+		"checks":  checks,
+		"message": map[bool]string{true: "Integration test passed", false: "Integration test failed"}[passed],
+	}, nil
+}
+
 // ExportTimesheet exports attendance data for payroll
 func (s *HRMSService) ExportTimesheet(ctx context.Context, tenantID string, startDate, endDate string) (map[string]interface{}, error) {
 	// Query attendance logs for date range
@@ -229,4 +398,3 @@ func (s *HRMSService) ExportTimesheet(ctx context.Context, tenantID string, star
 
 	return timesheetData, nil
 }
-
