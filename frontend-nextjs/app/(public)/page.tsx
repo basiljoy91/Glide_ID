@@ -1,6 +1,5 @@
-import { redirect } from 'next/navigation'
+import LandingPage from './landing/page'
 
 export default function PublicIndexPage() {
-  redirect('/landing')
+  return <LandingPage />
 }
-
