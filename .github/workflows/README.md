@@ -31,7 +31,7 @@ paths:
 
 ### 2. `deploy-go.yml` - Go Backend Deployment
 **Triggers:**
-- Push to `main` or `develop` branches when `backend-golang/**` changes
+- Push to `main` or `develop` branches
 - Manual workflow dispatch
 
 **Jobs:**
@@ -40,13 +40,6 @@ paths:
 3. **Deploy Render**: Deploys to Render (primary)
 4. **Deploy Koyeb**: Alternative deployment option (disabled by default)
 5. **Docker Build**: Builds and pushes Docker image
-
-**Path Filtering:**
-```yaml
-paths:
-  - 'backend-golang/**'
-  - '.github/workflows/deploy-go.yml'
-```
 
 **Required Secrets:**
 - `RENDER_SERVICE_ID`
@@ -60,7 +53,7 @@ paths:
 
 ### 3. `deploy-ai.yml` - Python AI Service Deployment
 **Triggers:**
-- Push to `main` or `develop` branches when `ai-python/**` changes
+- Push to `main` or `develop` branches
 - Manual workflow dispatch
 
 **Jobs:**
@@ -69,13 +62,6 @@ paths:
 3. **Deploy Hugging Face**: Deploys to Hugging Face Spaces
 4. **Deploy VPS**: Alternative VPS deployment (disabled by default)
 5. **Docker Compose**: Creates docker-compose configuration
-
-**Path Filtering:**
-```yaml
-paths:
-  - 'ai-python/**'
-  - '.github/workflows/deploy-ai.yml'
-```
 
 **Required Secrets:**
 - `HUGGINGFACE_TOKEN`
@@ -97,19 +83,15 @@ paths:
 - Runs tests and linters for all services
 - Does not deploy, only validates code quality
 
-## Path Filtering Strategy
+## Trigger Strategy
 
-Each deployment workflow uses path filtering to ensure:
-- **Independent deployments**: Changes to one service don't trigger others
-- **Efficient CI**: Only relevant tests run for changed code
-- **Cost optimization**: Fewer unnecessary builds
+Deployment workflows are configured to run on every push to `main` and `develop` so deployment is predictable and visible in the Actions tab.
 
 ### Example Scenarios
 
-1. **Frontend-only change**: Only `deploy-ui.yml` runs
-2. **Backend-only change**: Only `deploy-go.yml` runs
-3. **AI service change**: Only `deploy-ai.yml` runs
-4. **Multiple changes**: All relevant workflows run in parallel
+1. Push to `main`: all deployment workflows can run
+2. Push to `develop`: all deployment workflows can run
+3. Manual run: use `workflow_dispatch` from Actions tab
 
 ## Setting Up Secrets
 
@@ -178,8 +160,8 @@ ENCRYPTION_KEY=your-encryption-key
 ## Troubleshooting
 
 ### Workflow Not Triggering
-- Check path filters match changed files
-- Verify branch name matches workflow trigger
+- Verify branch name is `main` or `develop`
+- Verify Actions are enabled in repository settings
 - Check workflow file syntax
 
 ### Deployment Fails
@@ -212,4 +194,3 @@ All workflows support manual triggering:
 - No secrets in workflow files
 - Docker images scanned for vulnerabilities
 - Dependencies updated regularly
-
