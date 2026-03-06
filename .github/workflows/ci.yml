@@ -12,9 +12,6 @@ jobs:
     name: Frontend CI
     runs-on: ubuntu-latest
     if: github.event.pull_request.head.repo.full_name == github.repository
-    defaults:
-      run:
-        working-directory: ./frontend-nextjs
     
     steps:
       - name: Checkout code
@@ -28,15 +25,19 @@ jobs:
           cache-dependency-path: frontend-nextjs/package-lock.json
 
       - name: Install dependencies
+        working-directory: ./frontend-nextjs
         run: npm ci
 
       - name: Run linter
+        working-directory: ./frontend-nextjs
         run: npm run lint
 
       - name: Type check
+        working-directory: ./frontend-nextjs
         run: npx tsc --noEmit
 
       - name: Build (no deploy)
+        working-directory: ./frontend-nextjs
         env:
           NEXT_PUBLIC_API_URL: 'http://localhost:8080'
           NEXT_PUBLIC_AI_SERVICE_URL: 'http://localhost:8000'
