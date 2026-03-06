@@ -112,8 +112,8 @@ jobs:
           
           # Copy files to HF format
           mkdir -p /tmp/hf-space
-          cp -r ai-python/* /tmp/hf-space/
-          cp ai-python/Dockerfile /tmp/hf-space/
+          cp -r ./* /tmp/hf-space/
+          cp Dockerfile /tmp/hf-space/
           
           # Create app.py for Hugging Face Spaces
           cat > /tmp/hf-space/app.py << 'EOF'
@@ -186,4 +186,3 @@ jobs:
           name: docker-compose-ai
           path: docker-compose.yml
           retention-days: 1
-

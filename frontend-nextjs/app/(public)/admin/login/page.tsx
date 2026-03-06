@@ -123,7 +123,7 @@ export default function AdminLoginPage() {
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold mb-2">Admin Login</h1>
           <p className="text-muted-foreground">
-            Access your organization's dashboard
+            Access your organization&apos;s dashboard
           </p>
         </div>
 
@@ -271,7 +271,7 @@ export default function AdminLoginPage() {
 
         <div className="mt-6 text-center text-sm">
           <p className="text-muted-foreground">
-            Don't have an account?{' '}
+            Don&apos;t have an account?{' '}
             <Link href="/onboarding" className="text-primary hover:underline">
               Get Started
             </Link>
@@ -281,4 +281,3 @@ export default function AdminLoginPage() {
     </div>
   )
 }
-

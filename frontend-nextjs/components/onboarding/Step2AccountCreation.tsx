@@ -156,7 +156,7 @@ export function Step2AccountCreation({ data, updateData }: Step2Props) {
                 required
               />
               <p className="text-sm text-muted-foreground mt-1">
-                You'll be redirected to your identity provider to complete setup
+                You&apos;ll be redirected to your identity provider to complete setup
               </p>
             </div>
             <div>
@@ -181,4 +181,3 @@ export function Step2AccountCreation({ data, updateData }: Step2Props) {
     </div>
   )
 }
-

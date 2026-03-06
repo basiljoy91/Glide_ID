@@ -59,7 +59,7 @@ export function Step4Provisioning({ data }: Step4Props) {
           </button>
         </div>
         <p className="text-sm text-muted-foreground mt-4 max-w-md mx-auto">
-          <strong>Important:</strong> Save this code securely. You'll need it to configure
+          <strong>Important:</strong> Save this code securely. You&apos;ll need it to configure
           physical check-in kiosks. This code is permanently assigned to your organization.
         </p>
       </div>
@@ -95,4 +95,3 @@ export function Step4Provisioning({ data }: Step4Props) {
 function Label({ children, className }: { children: React.ReactNode; className?: string }) {
   return <label className={className}>{children}</label>
 }
-
