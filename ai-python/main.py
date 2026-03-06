@@ -772,7 +772,7 @@ async def startup_event():
     """Initialize services on startup"""
     global _arcface_ready, _arcface_warmup_error
     await database.connect()
-    if settings.AI_WARMUP_ON_STARTUP:
+    if settings.ai_warmup_on_startup:
         try:
             warmup_status = await asyncio.to_thread(face_recognition.warmup)
             model_state = str(warmup_status.get("model", ""))

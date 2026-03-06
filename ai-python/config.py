@@ -56,7 +56,16 @@ class Settings(BaseSettings):
     # Performance
     VECTOR_DIMENSION: int = int(os.getenv("VECTOR_DIMENSION", "512"))
     MAX_IMAGE_SIZE_MB: int = int(os.getenv("MAX_IMAGE_SIZE_MB", "10"))
-    AI_WARMUP_ON_STARTUP: bool = os.getenv("AI_WARMUP_ON_STARTUP", "true").lower() == "true"
+    AI_WARMUP_ON_STARTUP: str = os.getenv("AI_WARMUP_ON_STARTUP", "true")
+
+    @property
+    def ai_warmup_on_startup(self) -> bool:
+        normalized = str(self.AI_WARMUP_ON_STARTUP).strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on", "ture"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return False
+        return True
     
     class Config:
         env_file = ".env"
