@@ -5,10 +5,18 @@ import { useAmbientLight } from '@/hooks/useAmbientLight'
 import toast from 'react-hot-toast'
 
 interface FaceCameraProps {
-  onCapture: (imageData: string) => void
+  onCapture: (
+    imageData: string,
+    metadata?: {
+      framesBase64?: string[]
+      capturedAt?: string
+      livenessType: 'active' | 'passive'
+    }
+  ) => void | Promise<void>
   onError?: (error: string) => void
   livenessType?: 'active' | 'passive'
   showFlashlight?: boolean
+  instruction?: string
 }
 
 export function FaceCamera({
@@ -16,6 +24,7 @@ export function FaceCamera({
   onError,
   livenessType = 'passive',
   showFlashlight = true,
+  instruction,
 }: FaceCameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -62,8 +71,8 @@ export function FaceCamera({
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'user',
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 960 },
+          height: { ideal: 540 },
         },
       })
 
@@ -106,12 +115,27 @@ export function FaceCamera({
 
       // Convert to base64
       const imageData = canvas.toDataURL('image/jpeg', 0.9)
+
+      const framesBase64: string[] = []
+      if (livenessType === 'active') {
+        for (let i = 0; i < 3; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 120))
+          context.drawImage(video, 0, 0, canvas.width, canvas.height)
+          const burst = canvas.toDataURL('image/jpeg', 0.8)
+          const payload = burst.split(',')[1]
+          if (payload) framesBase64.push(payload)
+        }
+      }
       
       // Basic face detection feedback (simplified)
       setUserFeedback('Processing...')
       
       // Call onCapture callback
-      onCapture(imageData)
+      await onCapture(imageData, {
+        framesBase64,
+        capturedAt: new Date().toISOString(),
+        livenessType,
+      })
       
       setUserFeedback('Success!')
       setTimeout(() => setUserFeedback(''), 2000)
@@ -124,7 +148,7 @@ export function FaceCamera({
     } finally {
       setIsCapturing(false)
     }
-  }, [onCapture, onError])
+  }, [livenessType, onCapture, onError])
 
   const handleRetryPermission = () => {
     setPermissionStatus('prompt')
@@ -194,9 +218,9 @@ export function FaceCamera({
       {/* Controls */}
       <div className="mt-4 flex flex-col items-center space-y-4">
         <div className="text-sm text-muted-foreground text-center">
-          {livenessType === 'active' 
-            ? 'Please move your head slightly' 
-            : 'Position your face within the frame'}
+          {instruction || (livenessType === 'active'
+            ? 'Please move your head slightly'
+            : 'Position your face within the frame')}
         </div>
         
         <button
@@ -220,4 +244,3 @@ export function FaceCamera({
     </div>
   )
 }
-

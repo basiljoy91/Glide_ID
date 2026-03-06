@@ -29,10 +29,15 @@ interface ThemeState {
 interface KioskState {
   kioskCode: string | null
   kioskHmacSecret: string | null
+  kioskName: string | null
+  organizationName: string | null
+  credentialsVerifiedAt: string | null
   isOnline: boolean
   lastSyncTime: Date | null
   setKioskCode: (code: string | null) => void
   setKioskHmacSecret: (secret: string | null) => void
+  setKioskConnectionMeta: (kioskName: string | null, organizationName: string | null, verifiedAt: string | null) => void
+  clearKioskConnectionMeta: () => void
   setOnlineStatus: (isOnline: boolean) => void
   setLastSyncTime: (time: Date | null) => void
 }
@@ -73,10 +78,17 @@ export const useKioskStore = create<KioskState>()(
     (set) => ({
       kioskCode: null,
       kioskHmacSecret: null,
+      kioskName: null,
+      organizationName: null,
+      credentialsVerifiedAt: null,
       isOnline: true,
       lastSyncTime: null,
       setKioskCode: (code) => set({ kioskCode: code }),
       setKioskHmacSecret: (secret) => set({ kioskHmacSecret: secret }),
+      setKioskConnectionMeta: (kioskName, organizationName, verifiedAt) =>
+        set({ kioskName, organizationName, credentialsVerifiedAt: verifiedAt }),
+      clearKioskConnectionMeta: () =>
+        set({ kioskName: null, organizationName: null, credentialsVerifiedAt: null }),
       setOnlineStatus: (isOnline) => set({ isOnline }),
       setLastSyncTime: (time) => set({ lastSyncTime: time }),
     }),
@@ -86,4 +98,3 @@ export const useKioskStore = create<KioskState>()(
     }
   )
 )
-

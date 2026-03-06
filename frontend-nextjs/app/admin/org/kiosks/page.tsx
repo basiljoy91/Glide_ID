@@ -23,6 +23,10 @@ export default function OrgKiosksPage() {
   const [kiosks, setKiosks] = useState<Kiosk[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [status, setStatus] = useState<StatusFilter>('all')
+  const [pendingRevokeId, setPendingRevokeId] = useState<string | null>(null)
+  const [pendingRotateId, setPendingRotateId] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [rotatedSecret, setRotatedSecret] = useState<{ code: string; secret: string } | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -44,12 +48,7 @@ export default function OrgKiosksPage() {
       if (token) headers.Authorization = `Bearer ${token}`
       const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
       const qs = statusFilter && statusFilter !== 'all' ? `?status=${encodeURIComponent(statusFilter)}` : ''
-      const resp = await fetch(
-        `${base}/api/v1/kiosks${qs}`,
-        {
-          headers,
-        }
-      )
+      const resp = await fetch(`${base}/api/v1/kiosks${qs}`, { headers })
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}))
         throw new Error(err.error || 'Failed to load kiosks')
@@ -63,9 +62,9 @@ export default function OrgKiosksPage() {
     }
   }
 
-  const handleRevoke = async (id: string) => {
-    if (!confirm('Revoke this kiosk? It will no longer be able to check in.')) return
+  const revokeKiosk = async (id: string) => {
     try {
+      setBusyId(id)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
       const resp = await fetch(
@@ -80,15 +79,18 @@ export default function OrgKiosksPage() {
         throw new Error(err.error || 'Failed to revoke kiosk')
       }
       toast.success('Kiosk revoked')
+      setPendingRevokeId(null)
       await fetchKiosks()
     } catch (e: any) {
       toast.error(e.message || 'Failed to revoke kiosk')
+    } finally {
+      setBusyId(null)
     }
   }
 
-  const handleRotateSecret = async (id: string, code: string) => {
-    if (!confirm(`Rotate HMAC secret for kiosk ${code}? Existing kiosk clients must be updated.`)) return
+  const rotateSecret = async (id: string, code: string) => {
     try {
+      setBusyId(id)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
       const resp = await fetch(
@@ -115,11 +117,12 @@ export default function OrgKiosksPage() {
         toast.success('New kiosk secret generated')
       }
 
-      window.alert(
-        `Kiosk ${code} new HMAC secret (save this now):\n\n${secret}\n\nThis value is shown only now.`
-      )
+      setRotatedSecret({ code, secret })
+      setPendingRotateId(null)
     } catch (e: any) {
       toast.error(e.message || 'Failed to rotate kiosk secret')
+    } finally {
+      setBusyId(null)
     }
   }
 
@@ -140,6 +143,34 @@ export default function OrgKiosksPage() {
           Monitor and manage active check-in kiosks. Revoke compromised devices instantly.
         </p>
       </div>
+
+      {rotatedSecret && (
+        <div className="border rounded-lg bg-card p-4 space-y-3">
+          <div className="text-sm font-semibold">New secret issued for kiosk {rotatedSecret.code}</div>
+          <div className="text-xs text-muted-foreground">
+            This value is shown once. Update the kiosk device credential immediately.
+          </div>
+          <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto">{rotatedSecret.secret}</pre>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(rotatedSecret.secret)
+                  toast.success('Secret copied')
+                } catch {
+                  toast.error('Copy failed')
+                }
+              }}
+            >
+              Copy Secret
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setRotatedSecret(null)}>
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div className="border rounded-lg bg-card">
         <div className="border-b px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
@@ -164,29 +195,25 @@ export default function OrgKiosksPage() {
           </div>
         </div>
         {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading...</div>
+          <div className="p-4 space-y-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="skeleton h-14 w-full" />
+            ))}
+          </div>
         ) : kiosks.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">
             No kiosks registered yet. The onboarding flow creates the first kiosk automatically.
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left">
-                <th className="px-4 py-2">Name</th>
-                <th className="px-4 py-2">Code</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Health</th>
-                <th className="px-4 py-2 hidden md:table-cell">Last Heartbeat</th>
-                <th className="px-4 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <>
+            <div className="md:hidden divide-y">
               {kiosks.map((k) => (
-                <tr key={k.id} className="border-b last:border-b-0">
-                  <td className="px-4 py-2">{k.name}</td>
-                  <td className="px-4 py-2 font-mono">{k.code}</td>
-                  <td className="px-4 py-2">
+                <div key={k.id} className="p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-medium">{k.name}</div>
+                      <div className="text-xs font-mono text-muted-foreground">{k.code}</div>
+                    </div>
                     <span
                       className={
                         k.status === 'active'
@@ -196,49 +223,133 @@ export default function OrgKiosksPage() {
                     >
                       {k.status}
                     </span>
-                  </td>
-                  <td className="px-4 py-2">
-                    {k.status !== 'active' ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : isHealthy(k) ? (
-                      <span className="text-xs text-green-600 dark:text-green-300">Healthy</span>
-                    ) : (
-                      <span className="text-xs text-yellow-700 dark:text-yellow-300">Stale</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 hidden md:table-cell">
-                    {k.last_heartbeat_at
-                      ? new Date(k.last_heartbeat_at).toLocaleString()
-                      : '—'}
-                  </td>
-                  <td className="px-4 py-2 text-right">
-                    {k.status === 'active' && (
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRotateSecret(k.id, k.code)}
-                        >
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Health:{' '}
+                    {k.status !== 'active' ? '—' : isHealthy(k) ? 'Healthy' : 'Stale'}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Last heartbeat: {k.last_heartbeat_at ? new Date(k.last_heartbeat_at).toLocaleString() : '—'}
+                  </div>
+                  {k.status === 'active' && (
+                    <div className="flex flex-wrap gap-2">
+                      {pendingRotateId === k.id ? (
+                        <>
+                          <Button size="sm" onClick={() => void rotateSecret(k.id, k.code)} disabled={busyId === k.id}>
+                            Confirm Rotate
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setPendingRotateId(null)} disabled={busyId === k.id}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <Button size="sm" variant="outline" onClick={() => setPendingRotateId(k.id)}>
                           Rotate Secret
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRevoke(k.id)}
-                          className="text-destructive hover:text-destructive/80"
-                        >
+                      )}
+
+                      {pendingRevokeId === k.id ? (
+                        <>
+                          <Button size="sm" onClick={() => void revokeKiosk(k.id)} disabled={busyId === k.id} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                            Confirm Revoke
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(null)} disabled={busyId === k.id}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(k.id)} className="text-destructive hover:text-destructive/80">
                           Revoke
                         </Button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
+                      )}
+                    </div>
+                  )}
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="px-4 py-2">Name</th>
+                    <th className="px-4 py-2">Code</th>
+                    <th className="px-4 py-2">Status</th>
+                    <th className="px-4 py-2">Health</th>
+                    <th className="px-4 py-2">Last Heartbeat</th>
+                    <th className="px-4 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {kiosks.map((k) => (
+                    <tr key={k.id} className="border-b last:border-b-0 align-top">
+                      <td className="px-4 py-2">{k.name}</td>
+                      <td className="px-4 py-2 font-mono">{k.code}</td>
+                      <td className="px-4 py-2">
+                        <span
+                          className={
+                            k.status === 'active'
+                              ? 'text-xs text-green-600 dark:text-green-300'
+                              : 'text-xs text-muted-foreground'
+                          }
+                        >
+                          {k.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2">
+                        {k.status !== 'active' ? (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        ) : isHealthy(k) ? (
+                          <span className="text-xs text-green-600 dark:text-green-300">Healthy</span>
+                        ) : (
+                          <span className="text-xs text-yellow-700 dark:text-yellow-300">Stale</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {k.last_heartbeat_at ? new Date(k.last_heartbeat_at).toLocaleString() : '—'}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        {k.status === 'active' && (
+                          <div className="flex justify-end gap-2">
+                            {pendingRotateId === k.id ? (
+                              <>
+                                <Button size="sm" onClick={() => void rotateSecret(k.id, k.code)} disabled={busyId === k.id}>
+                                  Confirm Rotate
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => setPendingRotateId(null)} disabled={busyId === k.id}>
+                                  Cancel
+                                </Button>
+                              </>
+                            ) : (
+                              <Button size="sm" variant="outline" onClick={() => setPendingRotateId(k.id)}>
+                                Rotate Secret
+                              </Button>
+                            )}
+                            {pendingRevokeId === k.id ? (
+                              <>
+                                <Button size="sm" onClick={() => void revokeKiosk(k.id)} disabled={busyId === k.id} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                                  Confirm Revoke
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(null)} disabled={busyId === k.id}>
+                                  Cancel
+                                </Button>
+                              </>
+                            ) : (
+                              <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(k.id)} className="text-destructive hover:text-destructive/80">
+                                Revoke
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
     </div>
   )
 }
-

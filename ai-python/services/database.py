@@ -49,7 +49,8 @@ class DatabaseService:
     async def get_face_vector(
         self,
         user_id: str,
-        tenant_id: str
+        tenant_id: str,
+        model_name: Optional[str] = None
     ) -> Optional[bytes]:
         """
         Get encrypted face vector for a user.
@@ -60,15 +61,29 @@ class DatabaseService:
         async with self.pool.acquire() as conn:
             await self._set_rls_context(conn, tenant_id)
             
-            row = await conn.fetchrow(
-                """
-                SELECT encrypted_vector
-                FROM face_vectors
-                WHERE user_id = $1 AND tenant_id = $2
-                """,
-                uuid.UUID(user_id),
-                uuid.UUID(tenant_id)
-            )
+            if model_name:
+                row = await conn.fetchrow(
+                    """
+                    SELECT encrypted_vector
+                    FROM face_vectors
+                    WHERE user_id = $1 AND tenant_id = $2 AND model_name = $3
+                    """,
+                    uuid.UUID(user_id),
+                    uuid.UUID(tenant_id),
+                    model_name
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT encrypted_vector
+                    FROM face_vectors
+                    WHERE user_id = $1 AND tenant_id = $2
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    uuid.UUID(user_id),
+                    uuid.UUID(tenant_id)
+                )
             
             if row:
                 return row['encrypted_vector']
@@ -80,31 +95,35 @@ class DatabaseService:
         tenant_id: str,
         encrypted_vector: bytes,
         vector_dimension: int,
-        confidence_score: Optional[float] = None
+        confidence_score: Optional[float] = None,
+        model_name: Optional[str] = None
     ):
         """Store encrypted face vector"""
         async with self.pool.acquire() as conn:
             await self._set_rls_context(conn, tenant_id)
             
+            model = model_name or settings.DEEPFACE_MODEL or "ArcFace"
             await conn.execute(
                 """
                 INSERT INTO face_vectors (
                     user_id, tenant_id, encrypted_vector,
-                    vector_dimension, confidence_score, created_at, updated_at
+                    vector_dimension, confidence_score, model_name, created_at, updated_at
                 )
-                VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+                VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     encrypted_vector = EXCLUDED.encrypted_vector,
                     vector_dimension = EXCLUDED.vector_dimension,
                     confidence_score = EXCLUDED.confidence_score,
+                    model_name = EXCLUDED.model_name,
                     updated_at = NOW()
                 """,
                 uuid.UUID(user_id),
                 uuid.UUID(tenant_id),
                 encrypted_vector,
                 vector_dimension,
-                confidence_score
+                confidence_score,
+                model
             )
     
     async def update_face_vector(
@@ -112,31 +131,36 @@ class DatabaseService:
         user_id: str,
         tenant_id: str,
         encrypted_vector: bytes,
-        confidence_score: Optional[float] = None
+        confidence_score: Optional[float] = None,
+        model_name: Optional[str] = None
     ):
         """Update existing face vector (for continuous learning)"""
         async with self.pool.acquire() as conn:
             await self._set_rls_context(conn, tenant_id)
             
+            model = model_name or settings.DEEPFACE_MODEL or "ArcFace"
             await conn.execute(
                 """
                 UPDATE face_vectors
                 SET
                     encrypted_vector = $1,
                     confidence_score = COALESCE($2, confidence_score),
+                    model_name = $3,
                     last_learning_update = NOW(),
                     updated_at = NOW()
-                WHERE user_id = $3 AND tenant_id = $4
+                WHERE user_id = $4 AND tenant_id = $5
                 """,
                 encrypted_vector,
                 confidence_score,
+                model,
                 uuid.UUID(user_id),
                 uuid.UUID(tenant_id)
             )
     
     async def get_all_tenant_vectors(
         self,
-        tenant_id: str
+        tenant_id: str,
+        model_name: Optional[str] = None
     ) -> Dict[str, bytes]:
         """
         Get all encrypted vectors for a tenant (for 1:N matching).
@@ -147,14 +171,25 @@ class DatabaseService:
         async with self.pool.acquire() as conn:
             await self._set_rls_context(conn, tenant_id)
             
-            rows = await conn.fetch(
-                """
-                SELECT user_id, encrypted_vector
-                FROM face_vectors
-                WHERE tenant_id = $1
-                """,
-                uuid.UUID(tenant_id)
-            )
+            if model_name:
+                rows = await conn.fetch(
+                    """
+                    SELECT user_id, encrypted_vector
+                    FROM face_vectors
+                    WHERE tenant_id = $1 AND model_name = $2
+                    """,
+                    uuid.UUID(tenant_id),
+                    model_name
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT user_id, encrypted_vector
+                    FROM face_vectors
+                    WHERE tenant_id = $1
+                    """,
+                    uuid.UUID(tenant_id)
+                )
             
             return {
                 str(row['user_id']): row['encrypted_vector']
@@ -216,4 +251,3 @@ class DatabaseService:
             if row and row['last_learning_update']:
                 return row['last_learning_update']
             return None
-

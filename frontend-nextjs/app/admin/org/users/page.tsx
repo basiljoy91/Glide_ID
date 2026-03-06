@@ -594,39 +594,22 @@ export default function OrgUsersPage() {
         </div>
 
         {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading...</div>
+          <div className="p-4 space-y-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="skeleton h-16 w-full" />
+            ))}
+          </div>
         ) : filteredUsers.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">No employees found.</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[1024px]">
-              <thead>
-                <tr className="border-b text-left">
-                  <th className="px-4 py-2">
-                    <input
-                      type="checkbox"
-                      checked={
-                        filteredUsers.length > 0 &&
-                        filteredUsers.every((u) => Boolean(selectedRows[u.id]))
-                      }
-                      onChange={(e) => toggleSelectAllVisible(e.target.checked)}
-                    />
-                  </th>
-                  <th className="px-4 py-2">Employee ID</th>
-                  <th className="px-4 py-2">Name</th>
-                  <th className="px-4 py-2">Email</th>
-                  <th className="px-4 py-2">Department</th>
-                  <th className="px-4 py-2">Role</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredUsers.map((u) => {
-                  const isEditing = editingId === u.id
-                  return (
-                    <tr key={u.id} className="border-b last:border-b-0 align-top">
-                      <td className="px-4 py-2">
+          <>
+            <div className="md:hidden divide-y">
+              {filteredUsers.map((u) => {
+                const isEditing = editingId === u.id
+                return (
+                  <div key={u.id} className="p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <label className="inline-flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={Boolean(selectedRows[u.id])}
@@ -634,135 +617,274 @@ export default function OrgUsersPage() {
                             setSelectedRows((prev) => ({ ...prev, [u.id]: e.target.checked }))
                           }
                         />
-                      </td>
-                      <td className="px-4 py-2">{u.employee_id}</td>
-                      <td className="px-4 py-2">
-                        {isEditing ? (
-                          <div className="grid grid-cols-1 gap-2">
-                            <Input
-                              value={editingUser.first_name || ''}
-                              onChange={(e) =>
-                                setEditingUser((prev) => ({ ...prev, first_name: e.target.value }))
-                              }
-                              placeholder="First name"
-                            />
-                            <Input
-                              value={editingUser.last_name || ''}
-                              onChange={(e) =>
-                                setEditingUser((prev) => ({ ...prev, last_name: e.target.value }))
-                              }
-                              placeholder="Last name"
-                            />
-                          </div>
-                        ) : (
-                          `${u.first_name} ${u.last_name}`
-                        )}
-                      </td>
-                      <td className="px-4 py-2">
-                        {isEditing ? (
-                          <Input
-                            type="email"
-                            value={editingUser.email || ''}
+                        <span className="font-medium">{u.employee_id}</span>
+                      </label>
+                      <span
+                        className={
+                          u.is_active
+                            ? 'text-xs text-green-600 dark:text-green-300'
+                            : 'text-xs text-muted-foreground'
+                        }
+                      >
+                        {u.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {u.first_name} {u.last_name} · {u.email}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Department:{' '}
+                      {u.department_id ? departments.find((d) => d.id === u.department_id)?.name || '—' : '—'}
+                    </div>
+                    <div className="text-xs text-muted-foreground">Role: {u.role}</div>
+                    {isEditing && (
+                      <div className="space-y-2">
+                        <Input
+                          value={editingUser.first_name || ''}
+                          onChange={(e) =>
+                            setEditingUser((prev) => ({ ...prev, first_name: e.target.value }))
+                          }
+                          placeholder="First name"
+                        />
+                        <Input
+                          value={editingUser.last_name || ''}
+                          onChange={(e) =>
+                            setEditingUser((prev) => ({ ...prev, last_name: e.target.value }))
+                          }
+                          placeholder="Last name"
+                        />
+                        <Input
+                          type="email"
+                          value={editingUser.email || ''}
+                          onChange={(e) =>
+                            setEditingUser((prev) => ({ ...prev, email: e.target.value }))
+                          }
+                          placeholder="Email"
+                        />
+                        <select
+                          value={(editingUser.department_id as string) || ''}
+                          onChange={(e) =>
+                            setEditingUser((prev) => ({ ...prev, department_id: e.target.value }))
+                          }
+                          className="h-10 rounded-md border border-input bg-background px-3 text-sm w-full"
+                        >
+                          <option value="">Unassigned</option>
+                          {departments.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={(editingUser.role as Role) || u.role}
+                          onChange={(e) =>
+                            setEditingUser((prev) => ({ ...prev, role: e.target.value as Role }))
+                          }
+                          className="h-10 rounded-md border border-input bg-background px-3 text-sm w-full"
+                        >
+                          {ROLE_OPTIONS.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      {isEditing ? (
+                        <>
+                          <Button size="sm" onClick={() => void saveEdit(u)}>
+                            Save
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={cancelEdit}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button size="sm" variant="outline" onClick={() => beginEdit(u)}>
+                            Edit
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => void toggleActive(u)}>
+                            {u.is_active ? 'Deactivate' : 'Activate'}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => void copyEnrollLink(u.id)}>
+                            Copy enroll link
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm min-w-[1024px]">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="px-4 py-2">
+                      <input
+                        type="checkbox"
+                        checked={
+                          filteredUsers.length > 0 &&
+                          filteredUsers.every((u) => Boolean(selectedRows[u.id]))
+                        }
+                        onChange={(e) => toggleSelectAllVisible(e.target.checked)}
+                      />
+                    </th>
+                    <th className="px-4 py-2">Employee ID</th>
+                    <th className="px-4 py-2">Name</th>
+                    <th className="px-4 py-2">Email</th>
+                    <th className="px-4 py-2">Department</th>
+                    <th className="px-4 py-2">Role</th>
+                    <th className="px-4 py-2">Status</th>
+                    <th className="px-4 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUsers.map((u) => {
+                    const isEditing = editingId === u.id
+                    return (
+                      <tr key={u.id} className="border-b last:border-b-0 align-top">
+                        <td className="px-4 py-2">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedRows[u.id])}
                             onChange={(e) =>
-                              setEditingUser((prev) => ({ ...prev, email: e.target.value }))
+                              setSelectedRows((prev) => ({ ...prev, [u.id]: e.target.checked }))
                             }
                           />
-                        ) : (
-                          u.email
-                        )}
-                      </td>
-                      <td className="px-4 py-2">
-                        {isEditing ? (
-                          <select
-                            value={(editingUser.department_id as string) || ''}
-                            onChange={(e) =>
-                              setEditingUser((prev) => ({ ...prev, department_id: e.target.value }))
-                            }
-                            className="h-10 rounded-md border border-input bg-background px-3 text-sm w-full"
-                          >
-                            <option value="">Unassigned</option>
-                            {departments.map((d) => (
-                              <option key={d.id} value={d.id}>
-                                {d.name}
-                              </option>
-                            ))}
-                          </select>
-                        ) : u.department_id ? (
-                          departments.find((d) => d.id === u.department_id)?.name || '—'
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td className="px-4 py-2">
-                        {isEditing ? (
-                          <select
-                            value={(editingUser.role as Role) || u.role}
-                            onChange={(e) =>
-                              setEditingUser((prev) => ({ ...prev, role: e.target.value as Role }))
-                            }
-                            className="h-10 rounded-md border border-input bg-background px-3 text-sm w-full"
-                          >
-                            {ROLE_OPTIONS.map((r) => (
-                              <option key={r} value={r}>
-                                {r}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          u.role
-                        )}
-                      </td>
-                      <td className="px-4 py-2">
-                        <span
-                          className={
-                            u.is_active
-                              ? 'text-xs text-green-600 dark:text-green-300'
-                              : 'text-xs text-muted-foreground'
-                          }
-                        >
-                          {u.is_active ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2">
-                        <div className="flex justify-end flex-wrap gap-2">
+                        </td>
+                        <td className="px-4 py-2">{u.employee_id}</td>
+                        <td className="px-4 py-2">
                           {isEditing ? (
-                            <>
-                              <Button size="sm" onClick={() => void saveEdit(u)}>
-                                Save
-                              </Button>
-                              <Button size="sm" variant="outline" onClick={cancelEdit}>
-                                Cancel
-                              </Button>
-                            </>
+                            <div className="grid grid-cols-1 gap-2">
+                              <Input
+                                value={editingUser.first_name || ''}
+                                onChange={(e) =>
+                                  setEditingUser((prev) => ({ ...prev, first_name: e.target.value }))
+                                }
+                                placeholder="First name"
+                              />
+                              <Input
+                                value={editingUser.last_name || ''}
+                                onChange={(e) =>
+                                  setEditingUser((prev) => ({ ...prev, last_name: e.target.value }))
+                                }
+                                placeholder="Last name"
+                              />
+                            </div>
                           ) : (
-                            <>
-                              <Button size="sm" variant="outline" onClick={() => beginEdit(u)}>
-                                Edit
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => void toggleActive(u)}
-                              >
-                                {u.is_active ? 'Deactivate' : 'Activate'}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => void copyEnrollLink(u.id)}
-                              >
-                                Copy enroll link
-                              </Button>
-                            </>
+                            `${u.first_name} ${u.last_name}`
                           )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+                        </td>
+                        <td className="px-4 py-2">
+                          {isEditing ? (
+                            <Input
+                              type="email"
+                              value={editingUser.email || ''}
+                              onChange={(e) =>
+                                setEditingUser((prev) => ({ ...prev, email: e.target.value }))
+                              }
+                            />
+                          ) : (
+                            u.email
+                          )}
+                        </td>
+                        <td className="px-4 py-2">
+                          {isEditing ? (
+                            <select
+                              value={(editingUser.department_id as string) || ''}
+                              onChange={(e) =>
+                                setEditingUser((prev) => ({ ...prev, department_id: e.target.value }))
+                              }
+                              className="h-10 rounded-md border border-input bg-background px-3 text-sm w-full"
+                            >
+                              <option value="">Unassigned</option>
+                              {departments.map((d) => (
+                                <option key={d.id} value={d.id}>
+                                  {d.name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : u.department_id ? (
+                            departments.find((d) => d.id === u.department_id)?.name || '—'
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="px-4 py-2">
+                          {isEditing ? (
+                            <select
+                              value={(editingUser.role as Role) || u.role}
+                              onChange={(e) =>
+                                setEditingUser((prev) => ({ ...prev, role: e.target.value as Role }))
+                              }
+                              className="h-10 rounded-md border border-input bg-background px-3 text-sm w-full"
+                            >
+                              {ROLE_OPTIONS.map((r) => (
+                                <option key={r} value={r}>
+                                  {r}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            u.role
+                          )}
+                        </td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={
+                              u.is_active
+                                ? 'text-xs text-green-600 dark:text-green-300'
+                                : 'text-xs text-muted-foreground'
+                            }
+                          >
+                            {u.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex justify-end flex-wrap gap-2">
+                            {isEditing ? (
+                              <>
+                                <Button size="sm" onClick={() => void saveEdit(u)}>
+                                  Save
+                                </Button>
+                                <Button size="sm" variant="outline" onClick={cancelEdit}>
+                                  Cancel
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button size="sm" variant="outline" onClick={() => beginEdit(u)}>
+                                  Edit
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => void toggleActive(u)}
+                                >
+                                  {u.is_active ? 'Deactivate' : 'Activate'}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => void copyEnrollLink(u.id)}
+                                >
+                                  Copy enroll link
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
     </div>

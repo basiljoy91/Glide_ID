@@ -151,7 +151,11 @@ export default function SuperAdminOrganizationsPage() {
 
       <div className="border rounded-lg bg-card overflow-x-auto">
         {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading...</div>
+          <div className="p-4 space-y-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="skeleton h-12 w-full min-w-[760px]" />
+            ))}
+          </div>
         ) : rows.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">No organizations found.</div>
         ) : (

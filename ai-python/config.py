@@ -40,11 +40,11 @@ class Settings(BaseSettings):
     
     # DeepFace Configuration
     DEEPFACE_BACKEND: str = os.getenv("DEEPFACE_BACKEND", "opencv")
-    DEEPFACE_MODEL: str = os.getenv("DEEPFACE_MODEL", "VGG-Face")
+    DEEPFACE_MODEL: str = os.getenv("DEEPFACE_MODEL", "ArcFace")
     DEEPFACE_DETECTOR: str = os.getenv("DEEPFACE_DETECTOR", "opencv")
     
     # Vector Comparison Thresholds
-    DEFAULT_SIMILARITY_THRESHOLD: float = float(os.getenv("DEFAULT_SIMILARITY_THRESHOLD", "0.85"))
+    DEFAULT_SIMILARITY_THRESHOLD: float = float(os.getenv("DEFAULT_SIMILARITY_THRESHOLD", "0.62"))
     CONTINUOUS_LEARNING_THRESHOLD: float = float(os.getenv("CONTINUOUS_LEARNING_THRESHOLD", "0.98"))
     CONTINUOUS_LEARNING_RATE: float = float(os.getenv("CONTINUOUS_LEARNING_RATE", "0.05"))
     MAX_LEARNING_FREQUENCY_DAYS: int = int(os.getenv("MAX_LEARNING_FREQUENCY_DAYS", "7"))
@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     # Performance
     VECTOR_DIMENSION: int = int(os.getenv("VECTOR_DIMENSION", "512"))
     MAX_IMAGE_SIZE_MB: int = int(os.getenv("MAX_IMAGE_SIZE_MB", "10"))
+    AI_WARMUP_ON_STARTUP: bool = os.getenv("AI_WARMUP_ON_STARTUP", "true").lower() == "true"
     
     class Config:
         env_file = ".env"

@@ -7,14 +7,17 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
+import asyncio
 import uvicorn
 import os
 from datetime import datetime
 import base64
 import binascii
+import time
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
+import numpy as np
 
 from config import settings
 from services.face_recognition import FaceRecognitionService
@@ -41,9 +44,50 @@ app.add_middleware(
 # Initialize services
 face_recognition = FaceRecognitionService()
 vector_comparison = VectorComparisonService()
-continuous_learning = ContinuousLearningService()
 database = DatabaseService()
+continuous_learning = ContinuousLearningService(database)
 encryption = EncryptionUtils()
+
+# Short-lived in-memory cache for tenant vectors (performance).
+_tenant_vector_cache: Dict[str, Tuple[float, Dict[str, np.ndarray]]] = {}
+_TENANT_VECTOR_CACHE_TTL_SEC = 20
+_arcface_ready: bool = False
+_arcface_warmup_error: Optional[str] = None
+
+
+def _invalidate_tenant_cache(tenant_id: str):
+    if tenant_id in _tenant_vector_cache:
+        del _tenant_vector_cache[tenant_id]
+
+
+async def _get_tenant_vectors_cached(tenant_id: str) -> Dict[str, np.ndarray]:
+    now_ts = time.time()
+    cached = _tenant_vector_cache.get(tenant_id)
+    if cached and (now_ts - cached[0]) <= _TENANT_VECTOR_CACHE_TTL_SEC:
+        return cached[1]
+
+    encrypted_map = await database.get_all_tenant_vectors(tenant_id, model_name=face_recognition.model_name)
+    decrypted_map: Dict[str, np.ndarray] = {}
+    for user_id, encrypted_vector in encrypted_map.items():
+        try:
+            plain = encryption.decrypt_vector(encrypted_vector)
+            decrypted_map[user_id] = np.array(plain, dtype=np.float32)
+        except Exception:
+            continue
+
+    _tenant_vector_cache[tenant_id] = (now_ts, decrypted_map)
+    return decrypted_map
+
+
+def _decode_base64_image(raw: str) -> Image.Image:
+    image_b64 = raw.strip()
+    if image_b64.startswith("data:") and "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+    image_data = base64.b64decode(image_b64)
+    img = Image.open(BytesIO(image_data))
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    return img
 
 
 # ============================================================================
@@ -55,6 +99,9 @@ class HealthResponse(BaseModel):
     timestamp: datetime
     service: str = "ai-microservice"
     version: str = "1.0.0"
+    model_name: str = "ArcFace"
+    model_ready: bool = False
+    warmup_error: Optional[str] = None
 
 
 class VectorizeRequest(BaseModel):
@@ -74,9 +121,10 @@ class VectorizeResponse(BaseModel):
 
 class CompareRequest(BaseModel):
     image_base64: str = Field(..., description="Base64 encoded image to compare")
+    frames_base64: Optional[List[str]] = Field(None, description="Optional additional frames for consensus matching")
     tenant_id: str = Field(..., description="Tenant UUID")
     user_id: Optional[str] = Field(None, description="User UUID for 1:1 comparison")
-    threshold: float = Field(0.85, description="Similarity threshold (0.0-1.0)")
+    threshold: float = Field(0.62, description="Similarity threshold (0.0-1.0)")
 
 
 class CompareResponse(BaseModel):
@@ -131,7 +179,10 @@ async def health_check():
     """
     return HealthResponse(
         status="healthy",
-        timestamp=datetime.utcnow()
+        timestamp=datetime.utcnow(),
+        model_name=face_recognition.model_name,
+        model_ready=_arcface_ready,
+        warmup_error=_arcface_warmup_error,
     )
 
 
@@ -193,6 +244,10 @@ async def vectorize_face(
         # Convert to RGB if necessary
         if image.mode != 'RGB':
             image = image.convert('RGB')
+
+        quality_score, _ = face_recognition.estimate_capture_quality(image)
+        if quality_score < 0.35:
+            raise HTTPException(status_code=400, detail="Face quality is too low for enrollment. Improve lighting and hold steady.")
         
         # Extract face vector
         vector, confidence = await face_recognition.extract_vector(image)
@@ -208,11 +263,14 @@ async def vectorize_face(
         
         # Check if vector exists for continuous learning
         if request.update_existing:
-            existing_vector = await database.get_face_vector(request.user_id, request.tenant_id)
+            existing_vector = await database.get_face_vector(
+                request.user_id, request.tenant_id, model_name=face_recognition.model_name
+            )
             if existing_vector:
+                existing_plain = encryption.decrypt_vector(existing_vector)
                 # Apply continuous learning (blend vectors)
                 updated_vector = await continuous_learning.update_vector(
-                    existing_vector=existing_vector,
+                    existing_vector=existing_plain,
                     new_vector=vector,
                     confidence=confidence
                 )
@@ -222,8 +280,10 @@ async def vectorize_face(
                         user_id=request.user_id,
                         tenant_id=request.tenant_id,
                         encrypted_vector=encrypted_vector,
-                        confidence_score=confidence
+                        confidence_score=confidence,
+                        model_name=face_recognition.model_name
                     )
+                    _invalidate_tenant_cache(request.tenant_id)
                     return VectorizeResponse(
                         success=True,
                         user_id=request.user_id,
@@ -238,8 +298,10 @@ async def vectorize_face(
             tenant_id=request.tenant_id,
             encrypted_vector=encrypted_vector,
             vector_dimension=len(vector),
-            confidence_score=confidence
+            confidence_score=confidence,
+            model_name=face_recognition.model_name
         )
+        _invalidate_tenant_cache(request.tenant_id)
         
         return VectorizeResponse(
             success=True,
@@ -277,6 +339,10 @@ async def vectorize_face_file(
         
         if image.mode != 'RGB':
             image = image.convert('RGB')
+
+        quality_score, _ = face_recognition.estimate_capture_quality(image)
+        if quality_score < 0.35:
+            raise HTTPException(status_code=400, detail="Face quality is too low for enrollment. Improve lighting and hold steady.")
         
         # Extract vector
         vector, confidence = await face_recognition.extract_vector(image)
@@ -291,10 +357,13 @@ async def vectorize_face_file(
         encrypted_vector = encryption.encrypt_vector(vector)
         
         if update_existing:
-            existing_vector = await database.get_face_vector(user_id, tenant_id)
+            existing_vector = await database.get_face_vector(
+                user_id, tenant_id, model_name=face_recognition.model_name
+            )
             if existing_vector:
+                existing_plain = encryption.decrypt_vector(existing_vector)
                 updated_vector = await continuous_learning.update_vector(
-                    existing_vector=existing_vector,
+                    existing_vector=existing_plain,
                     new_vector=vector,
                     confidence=confidence
                 )
@@ -304,8 +373,10 @@ async def vectorize_face_file(
                         user_id=user_id,
                         tenant_id=tenant_id,
                         encrypted_vector=encrypted_vector,
-                        confidence_score=confidence
+                        confidence_score=confidence,
+                        model_name=face_recognition.model_name
                     )
+                    _invalidate_tenant_cache(tenant_id)
                     return VectorizeResponse(
                         success=True,
                         user_id=user_id,
@@ -319,8 +390,10 @@ async def vectorize_face_file(
             tenant_id=tenant_id,
             encrypted_vector=encrypted_vector,
             vector_dimension=len(vector),
-            confidence_score=confidence
+            confidence_score=confidence,
+            model_name=face_recognition.model_name
         )
+        _invalidate_tenant_cache(tenant_id)
         
         return VectorizeResponse(
             success=True,
@@ -355,38 +428,47 @@ async def compare_face(
     - **threshold**: Similarity threshold (default: 0.85)
     """
     try:
-        import base64
-        from io import BytesIO
-        from PIL import Image
-        
         if not request.user_id:
             raise HTTPException(status_code=400, detail="user_id is required for 1:1 comparison")
-        
-        # Decode image
-        image_data = base64.b64decode(request.image_base64)
-        image = Image.open(BytesIO(image_data))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Extract vector from image
-        vector, _ = await face_recognition.extract_vector(image)
-        if vector is None:
-            raise HTTPException(status_code=400, detail="No face detected in image")
+
+        image = _decode_base64_image(request.image_base64)
+        quality_score, quality_details = face_recognition.estimate_capture_quality(image)
+        if quality_score < 0.35:
+            raise HTTPException(status_code=400, detail=f"Low image quality for verification ({quality_details})")
         
         # Get stored vector
-        encrypted_vector = await database.get_face_vector(request.user_id, request.tenant_id)
+        encrypted_vector = await database.get_face_vector(
+            request.user_id, request.tenant_id, model_name=face_recognition.model_name
+        )
         if not encrypted_vector:
             return CompareResponse(
                 match=False,
                 confidence=0.0,
-                message="User vector not found"
+                message="User ArcFace vector not found. Re-enrollment required."
             )
         
         # Decrypt stored vector
         stored_vector = encryption.decrypt_vector(encrypted_vector)
-        
+        stored_vec_np = np.array(stored_vector, dtype=np.float32)
+        target_dim = int(stored_vec_np.shape[0])
+
+        model_vectors = await face_recognition.extract_multi_model_vectors(image)
+        if not model_vectors:
+            raise HTTPException(status_code=400, detail="No face detected in image")
+        query_vector = None
+        for _, vec in model_vectors.items():
+            if int(vec.shape[0]) == target_dim:
+                query_vector = vec
+                break
+        if query_vector is None:
+            return CompareResponse(
+                match=False,
+                confidence=0.0,
+                message=f"Vector model mismatch. Stored dim={target_dim}; re-enrollment recommended."
+            )
+
         # Compare vectors
-        similarity = await vector_comparison.cosine_similarity(vector, stored_vector)
+        similarity = await vector_comparison.cosine_similarity(query_vector, stored_vec_np)
         
         match = similarity >= request.threshold
         
@@ -424,50 +506,96 @@ async def compare_face_multiple(
     - **threshold**: Similarity threshold (default: 0.85)
     """
     try:
-        import base64
-        from io import BytesIO
-        from PIL import Image
-        import time
-        
         start_time = time.time()
-        
-        # Decode image
-        image_data = base64.b64decode(request.image_base64)
-        image = Image.open(BytesIO(image_data))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Extract vector from image
-        vector, _ = await face_recognition.extract_vector(image)
-        if vector is None:
+        input_images: List[Image.Image] = [_decode_base64_image(request.image_base64)]
+        if request.frames_base64:
+            for raw in request.frames_base64[:4]:
+                if not raw:
+                    continue
+                try:
+                    input_images.append(_decode_base64_image(raw))
+                except Exception:
+                    continue
+
+        # Quality gate + multi-model extraction across frames.
+        frame_vectors_by_dim: Dict[int, List[np.ndarray]] = {}
+        accepted_frames = 0
+        for img in input_images:
+            quality_score, _ = face_recognition.estimate_capture_quality(img)
+            if quality_score < 0.30:
+                continue
+            model_vectors = await face_recognition.extract_multi_model_vectors(img)
+            if not model_vectors:
+                continue
+            accepted_frames += 1
+            for _, vec in model_vectors.items():
+                dim = int(vec.shape[0])
+                frame_vectors_by_dim.setdefault(dim, []).append(np.array(vec, dtype=np.float32))
+
+        if accepted_frames == 0 or not frame_vectors_by_dim:
             raise HTTPException(status_code=400, detail="No face detected in image")
-        
-        # Get all vectors for tenant
-        tenant_vectors = await database.get_all_tenant_vectors(request.tenant_id)
-        
+
+        # Get cached decrypted vectors for tenant.
+        tenant_vectors = await _get_tenant_vectors_cached(request.tenant_id)
         if not tenant_vectors:
             return CompareMultipleResponse(
                 matches=[],
                 total_candidates=0,
                 processing_time_ms=0.0
             )
-        
-        # Compare against all vectors
+        # Group tenant vectors by embedding dimension (legacy + new models can coexist).
+        tenant_by_dim: Dict[int, Tuple[List[str], np.ndarray]] = {}
+        tmp_map: Dict[int, List[Tuple[str, np.ndarray]]] = {}
+        for uid, vec in tenant_vectors.items():
+            dim = int(vec.shape[0])
+            tmp_map.setdefault(dim, []).append((uid, vec))
+        for dim, pairs in tmp_map.items():
+            uids = [p[0] for p in pairs]
+            mat = np.vstack([p[1] for p in pairs]).astype(np.float32)
+            tenant_by_dim[dim] = (uids, mat)
+
+        # Multi-frame consensus scoring.
+        user_scores: Dict[str, float] = {}
+        user_votes: Dict[str, int] = {}
+        threshold = float(request.threshold)
+
+        for dim, query_vecs in frame_vectors_by_dim.items():
+            if dim not in tenant_by_dim:
+                continue
+            user_ids, mat = tenant_by_dim[dim]
+            mat_norm = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-8)
+
+            for q in query_vecs:
+                q_norm = q / (np.linalg.norm(q) + 1e-8)
+                sims = np.matmul(mat_norm, q_norm)
+                sims = np.clip(sims, 0.0, 1.0)
+                for i, sim in enumerate(sims):
+                    uid = user_ids[i]
+                    score = float(sim)
+                    if uid not in user_scores or score > user_scores[uid]:
+                        user_scores[uid] = score
+                    if score >= threshold:
+                        user_votes[uid] = user_votes.get(uid, 0) + 1
+
+        # Keep top-k candidates that satisfy score+vote constraints.
+        min_votes = 1 if accepted_frames <= 2 else 2
+        candidates = [
+            (uid, score)
+            for uid, score in user_scores.items()
+            if score >= threshold and user_votes.get(uid, 0) >= min_votes
+        ]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        candidates = candidates[:5]
+
         matches = []
-        for user_id, encrypted_vector in tenant_vectors.items():
-            stored_vector = encryption.decrypt_vector(encrypted_vector)
-            similarity = await vector_comparison.cosine_similarity(vector, stored_vector)
-            
-            if similarity >= request.threshold:
-                user_details = await database.get_user_details(user_id, request.tenant_id)
-                matches.append({
-                    "user_id": user_id,
-                    "confidence": float(similarity),
-                    "user_details": user_details
-                })
-        
-        # Sort by confidence (highest first)
-        matches.sort(key=lambda x: x["confidence"], reverse=True)
+        for uid, confidence in candidates:
+            user_details = await database.get_user_details(uid, request.tenant_id)
+            matches.append({
+                "user_id": uid,
+                "confidence": float(confidence),
+                "votes": int(user_votes.get(uid, 0)),
+                "user_details": user_details
+            })
         
         processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
         
@@ -557,7 +685,9 @@ async def apply_continuous_learning(
     """
     try:
         # Get existing vector
-        encrypted_vector = await database.get_face_vector(user_id, tenant_id)
+        encrypted_vector = await database.get_face_vector(
+            user_id, tenant_id, model_name=face_recognition.model_name
+        )
         if not encrypted_vector:
             raise HTTPException(status_code=404, detail="User vector not found")
         
@@ -587,8 +717,10 @@ async def apply_continuous_learning(
                 user_id=user_id,
                 tenant_id=tenant_id,
                 encrypted_vector=encrypted_updated,
-                confidence_score=confidence
+                confidence_score=confidence,
+                model_name=face_recognition.model_name
             )
+            _invalidate_tenant_cache(tenant_id)
             return JSONResponse(
                 status_code=200,
                 content={
@@ -638,7 +770,20 @@ async def general_exception_handler(request, exc):
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
+    global _arcface_ready, _arcface_warmup_error
     await database.connect()
+    if settings.AI_WARMUP_ON_STARTUP:
+        try:
+            warmup_status = await asyncio.to_thread(face_recognition.warmup)
+            model_state = str(warmup_status.get("model", ""))
+            _arcface_ready = model_state == "loaded"
+            if not _arcface_ready:
+                _arcface_warmup_error = model_state or "unknown warmup error"
+        except Exception as exc:
+            _arcface_ready = False
+            _arcface_warmup_error = str(exc)
+    else:
+        _arcface_ready = True
     print("AI Microservice started successfully")
 
 

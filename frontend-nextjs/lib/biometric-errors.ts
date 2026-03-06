@@ -52,6 +52,18 @@ export function mapBiometricErrorMessage(rawMessage: string, fallback = 'Biometr
     return 'Offline mode is not configured on this kiosk device. Add the encryption public key in environment settings.'
   }
 
+  if (normalized.includes('invalid kiosk code')) {
+    return 'This kiosk code is invalid or revoked. Please verify device credentials.'
+  }
+
+  if (normalized.includes('invalid hmac signature')) {
+    return 'Kiosk secret is incorrect for this kiosk code. Update the device credential and retry.'
+  }
+
+  if (normalized.includes('request timestamp expired')) {
+    return 'Kiosk clock is out of sync. Correct device time and retry.'
+  }
+
   if (normalized.includes('invalid or expired token')) {
     return 'This enrollment link is invalid or expired. Please request a new one.'
   }

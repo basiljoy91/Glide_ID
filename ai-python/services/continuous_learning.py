@@ -13,8 +13,9 @@ from services.database import DatabaseService
 class ContinuousLearningService:
     """Handle continuous learning to update face vectors over time"""
     
-    def __init__(self):
-        self.database = DatabaseService()
+    def __init__(self, database: Optional[DatabaseService] = None):
+        # Reuse app-level pooled database service; avoid creating an unconnected instance.
+        self.database = database or DatabaseService()
         self.learning_rate = settings.CONTINUOUS_LEARNING_RATE
         self.confidence_threshold = settings.CONTINUOUS_LEARNING_THRESHOLD
         self.max_frequency_days = settings.MAX_LEARNING_FREQUENCY_DAYS
@@ -111,4 +112,3 @@ class ContinuousLearningService:
         days_since_update = time_since_update.days
         
         return days_since_update >= self.max_frequency_days
-

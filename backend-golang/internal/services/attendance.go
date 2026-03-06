@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,11 +29,16 @@ import (
 )
 
 type AttendanceService struct {
-	db                *pgxpool.Pool
-	mqttClient        MQTTClient
-	aiServiceURL      string
-	aiServiceAPIKey   string
-	offlinePrivateKey *rsa.PrivateKey
+	db                 *pgxpool.Pool
+	mqttClient         MQTTClient
+	aiServiceURL       string
+	aiServiceAPIKey    string
+	offlinePrivateKey  *rsa.PrivateKey
+	faceMatchThreshold float64
+	vectorizeTimeout   time.Duration
+	livenessTimeout    time.Duration
+	compareTimeout     time.Duration
+	pinTimeout         time.Duration
 }
 
 // GetDB returns the database connection (for middleware)
@@ -44,7 +50,17 @@ type MQTTClient interface {
 	Publish(topic string, payload []byte) error
 }
 
-func NewAttendanceService(db *pgxpool.Pool, mqttClient MQTTClient, aiServiceURL, aiServiceAPIKey string, offlinePrivateKeyPEM string) *AttendanceService {
+func NewAttendanceService(
+	db *pgxpool.Pool,
+	mqttClient MQTTClient,
+	aiServiceURL, aiServiceAPIKey string,
+	offlinePrivateKeyPEM string,
+	faceMatchThreshold float64,
+	vectorizeTimeout time.Duration,
+	livenessTimeout time.Duration,
+	compareTimeout time.Duration,
+	pinTimeout time.Duration,
+) *AttendanceService {
 	var pk *rsa.PrivateKey
 	if pemRaw := strings.TrimSpace(offlinePrivateKeyPEM); pemRaw != "" {
 		if parsed, err := parseRSAPrivateKeyPEM([]byte(pemRaw)); err == nil {
@@ -60,12 +76,41 @@ func NewAttendanceService(db *pgxpool.Pool, mqttClient MQTTClient, aiServiceURL,
 		}
 	}
 	return &AttendanceService{
-		db:                db,
-		mqttClient:        mqttClient,
-		aiServiceURL:      aiServiceURL,
-		aiServiceAPIKey:   aiServiceAPIKey,
-		offlinePrivateKey: pk,
+		db:                 db,
+		mqttClient:         mqttClient,
+		aiServiceURL:       aiServiceURL,
+		aiServiceAPIKey:    aiServiceAPIKey,
+		offlinePrivateKey:  pk,
+		faceMatchThreshold: faceMatchThreshold,
+		vectorizeTimeout:   normalizeAITimeout(vectorizeTimeout, 90*time.Second),
+		livenessTimeout:    normalizeAITimeout(livenessTimeout, 15*time.Second),
+		compareTimeout:     normalizeAITimeout(compareTimeout, 20*time.Second),
+		pinTimeout:         normalizeAITimeout(pinTimeout, 8*time.Second),
 	}
+}
+
+func normalizeAITimeout(v time.Duration, fallback time.Duration) time.Duration {
+	if v <= 0 {
+		return fallback
+	}
+	if v < time.Second {
+		return time.Second
+	}
+	return v
+}
+
+func (s *AttendanceService) clampFaceThreshold() float64 {
+	t := s.faceMatchThreshold
+	if t <= 0 {
+		t = 0.62
+	}
+	if t < 0.45 {
+		return 0.45
+	}
+	if t > 0.92 {
+		return 0.92
+	}
+	return t
 }
 
 func loadOfflinePrivateKeyFromFileCandidates() string {
@@ -222,31 +267,213 @@ func (s *AttendanceService) VectorizeAndStore(ctx context.Context, tenantID, use
 		"update_existing": false,
 	}
 	jsonData, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/vectorize", bytes.NewBuffer(jsonData))
+	client := &http.Client{Timeout: s.vectorizeTimeout}
+	var lastErr error
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/vectorize", bytes.NewBuffer(jsonData))
+		if err != nil {
+			return fmt.Errorf("failed to create AI request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if s.aiServiceAPIKey != "" {
+			req.Header.Set("X-API-Key", s.aiServiceAPIKey)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < 2 && isRetryableAIError(err) {
+				time.Sleep(900 * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("AI service request failed: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			return nil
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = fmt.Sprintf("status %d", resp.StatusCode)
+		}
+		lastErr = fmt.Errorf("AI service responded with %d: %s", resp.StatusCode, msg)
+
+		if attempt < 2 && (resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode == http.StatusTooManyRequests) {
+			time.Sleep(900 * time.Millisecond)
+			continue
+		}
+		return lastErr
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("AI service request failed")
+}
+
+func isRetryableAIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "timeout") || strings.Contains(errText, "deadline exceeded")
+}
+
+type aiLivenessResponse struct {
+	IsLive        bool                   `json:"is_live"`
+	LivenessScore float64                `json:"liveness_score"`
+	Details       map[string]interface{} `json:"details"`
+}
+
+type compareCandidate struct {
+	UserID      string  `json:"user_id"`
+	Confidence  float64 `json:"confidence"`
+	Votes       int     `json:"votes"`
+	UserDetails struct {
+		EmployeeID string `json:"employee_id"`
+		FirstName  string `json:"first_name"`
+		LastName   string `json:"last_name"`
+	} `json:"user_details"`
+}
+
+type compareMultipleAIResponse struct {
+	TotalCandidates int                `json:"total_candidates"`
+	Matches         []compareCandidate `json:"matches"`
+}
+
+func (s *AttendanceService) callLiveness(
+	ctx context.Context,
+	imageBase64 string,
+	livenessType string,
+	challengeType string,
+	framesBase64 []string,
+) (*aiLivenessResponse, error) {
+	payload := map[string]interface{}{
+		"image_base64":   imageBase64,
+		"liveness_type":  livenessType,
+		"challenge_type": challengeType,
+	}
+	if len(framesBase64) > 0 {
+		payload["frames_base64"] = framesBase64
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/liveness", bytes.NewBuffer(body))
 	if err != nil {
-		return fmt.Errorf("failed to create AI request: %w", err)
+		return nil, fmt.Errorf("failed to create liveness request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if s.aiServiceAPIKey != "" {
-		req.Header.Set("X-API-Key", s.aiServiceAPIKey)
-	}
+	req.Header.Set("X-API-Key", s.aiServiceAPIKey)
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: s.livenessTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("AI service request failed: %w", err)
+		return nil, fmt.Errorf("liveness service request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		msg := strings.TrimSpace(string(body))
-		if msg != "" {
-			return fmt.Errorf("AI service responded with %d: %s", resp.StatusCode, msg)
+		if msg == "" {
+			msg = fmt.Sprintf("status %d", resp.StatusCode)
 		}
-		return fmt.Errorf("AI service responded with %d", resp.StatusCode)
+		return nil, fmt.Errorf("liveness service responded with %d: %s", resp.StatusCode, msg)
 	}
-	return nil
+
+	var out aiLivenessResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("failed to decode liveness response: %w", err)
+	}
+	return &out, nil
+}
+
+func parseLivenessAntiSpoofMetrics(details map[string]interface{}) (bool, float64, float64) {
+	toFloat := func(v interface{}) (float64, bool) {
+		switch t := v.(type) {
+		case float64:
+			return t, true
+		case float32:
+			return float64(t), true
+		case int:
+			return float64(t), true
+		case int64:
+			return float64(t), true
+		default:
+			return 0, false
+		}
+	}
+	toBool := func(v interface{}) (bool, bool) {
+		b, ok := v.(bool)
+		return b, ok
+	}
+
+	supported := false
+	vote := 0.5
+	score := 0.5
+	if v, ok := details["anti_spoof_supported"]; ok {
+		if b, ok := toBool(v); ok {
+			supported = b
+		}
+	}
+	if v, ok := details["anti_spoof_vote"]; ok {
+		if f, ok := toFloat(v); ok {
+			vote = f
+		}
+	}
+	if v, ok := details["anti_spoof_score"]; ok {
+		if f, ok := toFloat(v); ok {
+			score = f
+		}
+	}
+	return supported, vote, score
+}
+
+func hardSpoofFromLivenessDetails(details map[string]interface{}) bool {
+	supported, vote, score := parseLivenessAntiSpoofMetrics(details)
+	return supported && vote <= 0.0 && score < 0.16
+}
+
+func isAmbiguousMatch(matches []compareCandidate, threshold float64) bool {
+	if len(matches) < 2 {
+		return false
+	}
+	top1 := matches[0]
+	top2 := matches[1]
+	gap := top1.Confidence - top2.Confidence
+
+	requiredGap := 0.036
+	switch {
+	case top1.Confidence >= threshold+0.16:
+		requiredGap = 0.012
+	case top1.Confidence >= threshold+0.12:
+		requiredGap = 0.018
+	case top1.Confidence >= threshold+0.08:
+		requiredGap = 0.024
+	case top1.Confidence >= threshold+0.05:
+		requiredGap = 0.030
+	}
+	if gap >= requiredGap {
+		return false
+	}
+
+	// If multi-frame consensus is stronger for top-1, allow even with a tight score gap.
+	voteGap := top1.Votes - top2.Votes
+	if top1.Votes >= 2 && voteGap >= 1 && top1.Confidence >= threshold+0.03 {
+		return false
+	}
+	return true
 }
 
 // CheckInRequest represents a check-in request from kiosk
@@ -269,6 +496,7 @@ type CheckInResponse struct {
 	Success    bool      `json:"success"`
 	UserID     *string   `json:"user_id"`
 	UserName   *string   `json:"user_name"`
+	EmployeeID *string   `json:"employee_id,omitempty"`
 	Confidence *float64  `json:"confidence"`
 	PunchTime  time.Time `json:"punch_time"`
 	Status     string    `json:"status"` // "check_in" or "check_out"
@@ -324,7 +552,7 @@ func (s *AttendanceService) processBiometricCheckIn(
 	mqttTopic *string,
 ) (*CheckInResponse, error) {
 	// Enforce AI liveness checks before face matching to block spoof attacks.
-	livenessType := "passive"
+	livenessType := "active"
 	if req.LivenessType != nil && *req.LivenessType != "" {
 		livenessType = *req.LivenessType
 	}
@@ -332,97 +560,83 @@ func (s *AttendanceService) processBiometricCheckIn(
 	if req.ChallengeType != nil && *req.ChallengeType != "" {
 		challengeType = *req.ChallengeType
 	}
-	livenessReq := map[string]interface{}{
-		"image_base64":   req.ImageBase64,
-		"liveness_type":  livenessType,
-		"challenge_type": challengeType,
-	}
-	if len(req.FramesBase64) > 0 {
-		livenessReq["frames_base64"] = req.FramesBase64
-	}
-	livenessJSON, _ := json.Marshal(livenessReq)
-	livenessHTTPReq, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/liveness", bytes.NewBuffer(livenessJSON))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create liveness request: %w", err)
-	}
-	livenessHTTPReq.Header.Set("Content-Type", "application/json")
-	livenessHTTPReq.Header.Set("X-API-Key", s.aiServiceAPIKey)
-
-	livenessClient := &http.Client{Timeout: 8 * time.Second}
-	livenessResp, err := livenessClient.Do(livenessHTTPReq)
+	livenessBody, err := s.callLiveness(ctx, req.ImageBase64, livenessType, challengeType, req.FramesBase64)
 	if err != nil {
 		return nil, fmt.Errorf("liveness service request failed: %w", err)
 	}
-	defer livenessResp.Body.Close()
-	if livenessResp.StatusCode != http.StatusOK {
-		return &CheckInResponse{
-			Success: false,
-			Message: "Liveness verification failed",
-		}, nil
+
+	if !livenessBody.IsLive && livenessType == "active" && !hardSpoofFromLivenessDetails(livenessBody.Details) {
+		passiveBody, perr := s.callLiveness(ctx, req.ImageBase64, "passive", "any", nil)
+		if perr == nil && passiveBody != nil {
+			livenessBody = passiveBody
+			livenessType = "passive"
+		}
 	}
-	var livenessBody struct {
-		IsLive        bool    `json:"is_live"`
-		LivenessScore float64 `json:"liveness_score"`
-	}
-	if err := json.NewDecoder(livenessResp.Body).Decode(&livenessBody); err != nil {
-		return nil, fmt.Errorf("failed to decode liveness response: %w", err)
-	}
+
 	if !livenessBody.IsLive {
+		hardSpoof := hardSpoofFromLivenessDetails(livenessBody.Details)
+		message := "Live verification could not be confirmed. Keep your face centered and retry."
+		if hardSpoof || livenessBody.LivenessScore < 0.20 {
+			message = "Spoof risk detected. Please retry live verification."
+		}
+		if reasonRaw, ok := livenessBody.Details["reason"]; ok {
+			if reason, ok := reasonRaw.(string); ok {
+				reasonLower := strings.ToLower(reason)
+				if strings.Contains(reasonLower, "no face") {
+					message = "No face detected. Step closer and keep your face centered."
+				}
+				if strings.Contains(reasonLower, "trajectory") || strings.Contains(reasonLower, "frame") {
+					message = "Please hold steady for a moment and retry live verification."
+				}
+				if strings.Contains(reasonLower, "movement") {
+					message = "Please move your head slightly and retry live verification."
+				}
+				if strings.Contains(reasonLower, "passive guard") || strings.Contains(reasonLower, "below threshold") {
+					message = "Live verification could not be confirmed. Keep your face centered and retry."
+				}
+			}
+		}
 		return &CheckInResponse{
 			Success: false,
-			Message: "Spoof risk detected. Please retry live verification.",
+			Message: message,
 		}, nil
 	}
 
-	// Call AI service for 1:N comparison
-	aiReq := map[string]interface{}{
-		"image_base64": req.ImageBase64,
-		"tenant_id":    tenantID,
-		"threshold":    0.85,
-	}
-
-	jsonData, _ := json.Marshal(aiReq)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/compare/multiple", bytes.NewBuffer(jsonData))
+	// Call AI service for 1:N comparison.
+	threshold := s.clampFaceThreshold()
+	aiResp, err := s.compareMultiple(ctx, req.ImageBase64, req.FramesBase64, tenantID, threshold)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AI request: %w", err)
+		return nil, fmt.Errorf("face comparison failed: %w", err)
 	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-API-Key", s.aiServiceAPIKey)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("AI service request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return &CheckInResponse{
-			Success: false,
-			Message: "Face recognition failed",
-		}, nil
-	}
-
-	var aiResp struct {
-		Matches []struct {
-			UserID      string  `json:"user_id"`
-			Confidence  float64 `json:"confidence"`
-			UserDetails struct {
-				FirstName string `json:"first_name"`
-				LastName  string `json:"last_name"`
-			} `json:"user_details"`
-		} `json:"matches"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
-		return nil, fmt.Errorf("failed to decode AI response: %w", err)
+	if len(aiResp.Matches) == 0 && threshold > 0.50 {
+		// Fallback query with relaxed threshold for noisy webcam captures.
+		relaxed := threshold - 0.10
+		if relaxed < 0.50 {
+			relaxed = 0.50
+		}
+		fallbackResp, ferr := s.compareMultiple(ctx, req.ImageBase64, req.FramesBase64, tenantID, relaxed)
+		if ferr == nil && len(fallbackResp.Matches) > 0 {
+			aiResp = fallbackResp
+		}
 	}
 
 	if len(aiResp.Matches) == 0 {
+		if aiResp.TotalCandidates == 0 {
+			return &CheckInResponse{
+				Success: false,
+				Message: "No ArcFace enrollments found for this organization. Please re-enroll employees.",
+			}, nil
+		}
 		return &CheckInResponse{
 			Success: false,
 			Message: "No matching face found",
+		}, nil
+	}
+
+	if isAmbiguousMatch(aiResp.Matches, threshold) {
+		return &CheckInResponse{
+			Success: false,
+			Message: "Ambiguous face match detected. Please retry or use PIN fallback.",
 		}, nil
 	}
 
@@ -430,6 +644,24 @@ func (s *AttendanceService) processBiometricCheckIn(
 	match := aiResp.Matches[0]
 	userID := match.UserID
 	confidence := match.Confidence
+
+	// Enterprise safeguard: block accidental duplicate punches within a short window.
+	var lastPunch time.Time
+	var lastStatus string
+	if err := s.db.QueryRow(ctx, `
+		SELECT punch_time, status
+		FROM attendance_logs
+		WHERE user_id = $1 AND tenant_id = $2
+		ORDER BY punch_time DESC
+		LIMIT 1
+	`, userID, tenantID).Scan(&lastPunch, &lastStatus); err == nil {
+		if time.Since(lastPunch) < 20*time.Second {
+			return &CheckInResponse{
+				Success: false,
+				Message: fmt.Sprintf("Recent %s already recorded. Please wait a few seconds.", lastStatus),
+			}, nil
+		}
+	}
 
 	// Determine check-in vs check-out based on last attendance
 	status := s.determineAttendanceStatus(ctx, userID, tenantID)
@@ -490,17 +722,58 @@ func (s *AttendanceService) processBiometricCheckIn(
 	}
 
 	userName := fmt.Sprintf("%s %s", match.UserDetails.FirstName, match.UserDetails.LastName)
+	employeeID := match.UserDetails.EmployeeID
 
 	return &CheckInResponse{
 		Success:    true,
 		UserID:     &userID,
 		UserName:   &userName,
+		EmployeeID: &employeeID,
 		Confidence: &confidence,
 		PunchTime:  punchTime,
 		Status:     status,
 		DoorOpened: doorOpened,
 		Message:    fmt.Sprintf("Successfully checked %s", status),
 	}, nil
+}
+
+func (s *AttendanceService) compareMultiple(ctx context.Context, imageBase64 string, framesBase64 []string, tenantID string, threshold float64) (*compareMultipleAIResponse, error) {
+	aiReq := map[string]interface{}{
+		"image_base64":  imageBase64,
+		"frames_base64": framesBase64,
+		"tenant_id":     tenantID,
+		"threshold":     threshold,
+	}
+
+	jsonData, _ := json.Marshal(aiReq)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", s.aiServiceURL+"/api/v1/compare/multiple", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AI request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-API-Key", s.aiServiceAPIKey)
+
+	client := &http.Client{Timeout: s.compareTimeout}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("AI service request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = fmt.Sprintf("status %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("AI service compare/multiple error: %s", msg)
+	}
+
+	var aiResp compareMultipleAIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode AI response: %w", err)
+	}
+	return &aiResp, nil
 }
 
 func (s *AttendanceService) processPinCheckIn(
@@ -539,7 +812,7 @@ func (s *AttendanceService) processPinCheckIn(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-API-Key", s.aiServiceAPIKey)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: s.pinTimeout}
 	resp, err := client.Do(httpReq)
 	anomalyDetected := false
 	if err == nil && resp.StatusCode == http.StatusOK {
@@ -608,6 +881,10 @@ func (s *AttendanceService) processPinCheckIn(
 
 	userIDStr := userID.String()
 	userName := fmt.Sprintf("%s %s", firstName, lastName)
+	employeeID := ""
+	if req.PinCode != nil {
+		employeeID = *req.PinCode
+	}
 	message := fmt.Sprintf("Successfully checked %s", status)
 	if anomalyDetected {
 		message += " (Anomaly detected - flagged for HR review)"
@@ -617,6 +894,7 @@ func (s *AttendanceService) processPinCheckIn(
 		Success:    true,
 		UserID:     &userIDStr,
 		UserName:   &userName,
+		EmployeeID: &employeeID,
 		PunchTime:  punchTime,
 		Status:     status,
 		DoorOpened: doorOpened,

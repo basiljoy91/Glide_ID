@@ -146,6 +146,8 @@ CREATE TABLE face_vectors (
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     -- Encrypted vector stored as BYTEA (AES-256 encrypted)
     encrypted_vector BYTEA NOT NULL,
+    -- Embedding model tag (ArcFace-only matching in production)
+    model_name VARCHAR(64) NOT NULL DEFAULT 'ArcFace',
     -- Vector metadata (non-sensitive)
     vector_dimension INTEGER NOT NULL DEFAULT 512, -- DeepFace default
     confidence_score DECIMAL(5,4), -- Original match confidence
@@ -160,6 +162,7 @@ CREATE TABLE face_vectors (
 -- Note: We'll create a decrypted vector column for indexing purposes
 -- In production, this should be handled via a secure function that decrypts on-the-fly
 CREATE INDEX idx_face_vectors_tenant_id ON face_vectors(tenant_id);
+CREATE INDEX idx_face_vectors_tenant_model ON face_vectors(tenant_id, model_name);
 CREATE INDEX idx_face_vectors_user_id ON face_vectors(user_id);
 
 -- ============================================================================
@@ -802,4 +805,3 @@ CREATE TRIGGER audit_user_changes
 -- ============================================================================
 -- END OF SCHEMA
 -- ============================================================================
-

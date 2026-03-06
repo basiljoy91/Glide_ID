@@ -288,40 +288,20 @@ export default function OrgIntegrationsPage() {
           Existing Integrations
         </div>
         {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading...</div>
+          <div className="p-4 space-y-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="skeleton h-16 w-full" />
+            ))}
+          </div>
         ) : integrations.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">No integrations configured yet.</div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left">
-                <th className="px-4 py-2">Provider</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Last Sync</th>
-                <th className="px-4 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <>
+            <div className="md:hidden divide-y">
               {integrations.map((i) => (
-                <tr key={i.id} className="border-b last:border-b-0 align-top">
-                  <td className="px-4 py-2">
-                    {editingId === i.id ? (
-                      <select
-                        value={editProvider}
-                        onChange={(e) => setEditProvider(e.target.value)}
-                        className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-                      >
-                        {PROVIDERS.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      i.provider
-                    )}
-                  </td>
-                  <td className="px-4 py-2">
+                <div key={i.id} className="p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="font-medium">{i.provider}</div>
                     <span
                       className={
                         i.is_active
@@ -331,59 +311,163 @@ export default function OrgIntegrationsPage() {
                     >
                       {i.is_active ? 'Active' : 'Inactive'}
                     </span>
-                  </td>
-                  <td className="px-4 py-2">
-                    {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : '—'}
-                  </td>
-                  <td className="px-4 py-2">
-                    {editingId === i.id ? (
-                      <div className="space-y-2">
-                        <Input
-                          value={editApiKey}
-                          onChange={(e) => setEditApiKey(e.target.value)}
-                          placeholder="New API key (optional)"
-                        />
-                        <Input
-                          value={editApiSecret}
-                          onChange={(e) => setEditApiSecret(e.target.value)}
-                          placeholder="New API secret (optional)"
-                        />
-                        <textarea
-                          value={editConfigJson}
-                          onChange={(e) => setEditConfigJson(e.target.value)}
-                          className="flex min-h-[88px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        />
-                        <div className="flex justify-end gap-2">
-                          <Button size="sm" onClick={() => void saveEdit(i.id)}>
-                            Save
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={cancelEdit}>
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex justify-end gap-2">
-                        <Button size="sm" variant="outline" onClick={() => beginEdit(i)}>
-                          Edit
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Last sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : '—'}
+                  </div>
+                  {editingId === i.id ? (
+                    <div className="space-y-2">
+                      <select
+                        value={editProvider}
+                        onChange={(e) => setEditProvider(e.target.value)}
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      >
+                        {PROVIDERS.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        value={editApiKey}
+                        onChange={(e) => setEditApiKey(e.target.value)}
+                        placeholder="New API key (optional)"
+                      />
+                      <Input
+                        value={editApiSecret}
+                        onChange={(e) => setEditApiSecret(e.target.value)}
+                        placeholder="New API secret (optional)"
+                      />
+                      <textarea
+                        value={editConfigJson}
+                        onChange={(e) => setEditConfigJson(e.target.value)}
+                        className="flex min-h-[88px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      />
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={() => void saveEdit(i.id)}>
+                          Save
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void toggleIntegration(i.id, i.is_active)}
-                        >
-                          {i.is_active ? 'Disable' : 'Enable'}
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => void testIntegration(i.id)}>
-                          Test
+                        <Button size="sm" variant="outline" onClick={cancelEdit}>
+                          Cancel
                         </Button>
                       </div>
-                    )}
-                  </td>
-                </tr>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={() => beginEdit(i)}>
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void toggleIntegration(i.id, i.is_active)}
+                      >
+                        {i.is_active ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => void testIntegration(i.id)}>
+                        Test
+                      </Button>
+                    </div>
+                  )}
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="px-4 py-2">Provider</th>
+                    <th className="px-4 py-2">Status</th>
+                    <th className="px-4 py-2">Last Sync</th>
+                    <th className="px-4 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {integrations.map((i) => (
+                    <tr key={i.id} className="border-b last:border-b-0 align-top">
+                      <td className="px-4 py-2">
+                        {editingId === i.id ? (
+                          <select
+                            value={editProvider}
+                            onChange={(e) => setEditProvider(e.target.value)}
+                            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                          >
+                            {PROVIDERS.map((p) => (
+                              <option key={p} value={p}>
+                                {p}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          i.provider
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        <span
+                          className={
+                            i.is_active
+                              ? 'text-xs text-green-600 dark:text-green-300'
+                              : 'text-xs text-muted-foreground'
+                          }
+                        >
+                          {i.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2">
+                        {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : '—'}
+                      </td>
+                      <td className="px-4 py-2">
+                        {editingId === i.id ? (
+                          <div className="space-y-2">
+                            <Input
+                              value={editApiKey}
+                              onChange={(e) => setEditApiKey(e.target.value)}
+                              placeholder="New API key (optional)"
+                            />
+                            <Input
+                              value={editApiSecret}
+                              onChange={(e) => setEditApiSecret(e.target.value)}
+                              placeholder="New API secret (optional)"
+                            />
+                            <textarea
+                              value={editConfigJson}
+                              onChange={(e) => setEditConfigJson(e.target.value)}
+                              className="flex min-h-[88px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            />
+                            <div className="flex justify-end gap-2">
+                              <Button size="sm" onClick={() => void saveEdit(i.id)}>
+                                Save
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={cancelEdit}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex justify-end gap-2">
+                            <Button size="sm" variant="outline" onClick={() => beginEdit(i)}>
+                              Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void toggleIntegration(i.id, i.is_active)}
+                            >
+                              {i.is_active ? 'Disable' : 'Enable'}
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => void testIntegration(i.id)}>
+                              Test
+                            </Button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
     </div>

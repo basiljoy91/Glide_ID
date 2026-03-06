@@ -30,6 +30,8 @@ export default function OrgDepartmentsPage() {
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editing, setEditing] = useState<Partial<Department>>({})
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [busyDeleteId, setBusyDeleteId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -106,8 +108,8 @@ export default function OrgDepartmentsPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this department?')) return
     try {
+      setBusyDeleteId(id)
       const resp = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/departments/${id}`,
         {
@@ -121,8 +123,11 @@ export default function OrgDepartmentsPage() {
       }
       toast.success('Department deleted')
       setDepartments((prev) => prev.filter((d) => d.id !== id))
+      setPendingDeleteId(null)
     } catch (e: any) {
       toast.error(e.message || 'Failed to delete department')
+    } finally {
+      setBusyDeleteId(null)
     }
   }
 
@@ -243,88 +248,186 @@ export default function OrgDepartmentsPage() {
           Existing Departments
         </div>
         {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading...</div>
+          <div className="p-4 space-y-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="skeleton h-14 w-full" />
+            ))}
+          </div>
         ) : departments.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">
             No departments yet. Create your first department above.
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left">
-                <th className="px-4 py-2">Name</th>
-                <th className="px-4 py-2">Code</th>
-                <th className="px-4 py-2 hidden md:table-cell">Description</th>
-                <th className="px-4 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <>
+            <div className="md:hidden divide-y">
               {departments.map((d) => (
-                <tr key={d.id} className="border-b last:border-b-0">
-                  <td className="px-4 py-2">
-                    {editingId === d.id ? (
+                <div key={d.id} className="p-4 space-y-3">
+                  <div>
+                    <div className="font-medium">{d.name}</div>
+                    <div className="text-xs text-muted-foreground">Code: {d.code || '—'}</div>
+                    <div className="text-xs text-muted-foreground">Description: {d.description || '—'}</div>
+                  </div>
+                  {editingId === d.id ? (
+                    <div className="space-y-2">
                       <Input
                         value={editing.name || ''}
                         onChange={(e) => setEditing((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="Name"
                       />
-                    ) : (
-                      d.name
-                    )}
-                  </td>
-                  <td className="px-4 py-2">
-                    {editingId === d.id ? (
                       <Input
                         value={editing.code || ''}
                         onChange={(e) => setEditing((prev) => ({ ...prev, code: e.target.value }))}
+                        placeholder="Code"
                       />
-                    ) : (
-                      d.code || '-'
-                    )}
-                  </td>
-                  <td className="px-4 py-2 hidden md:table-cell">
-                    {editingId === d.id ? (
                       <Input
                         value={editing.description || ''}
-                        onChange={(e) =>
-                          setEditing((prev) => ({ ...prev, description: e.target.value }))
-                        }
+                        onChange={(e) => setEditing((prev) => ({ ...prev, description: e.target.value }))}
+                        placeholder="Description"
                       />
-                    ) : (
-                      d.description || '-'
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-right">
-                    <div className="flex justify-end gap-2">
-                      {editingId === d.id ? (
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={() => void saveEdit(d.id)}>
+                          Save
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={cancelEdit}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={() => beginEdit(d)}>
+                        Edit
+                      </Button>
+                      {pendingDeleteId === d.id ? (
                         <>
-                          <Button size="sm" onClick={() => void saveEdit(d.id)}>
-                            Save
+                          <Button
+                            size="sm"
+                            onClick={() => void handleDelete(d.id)}
+                            disabled={busyDeleteId === d.id}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Confirm Delete
                           </Button>
-                          <Button size="sm" variant="outline" onClick={cancelEdit}>
+                          <Button size="sm" variant="outline" onClick={() => setPendingDeleteId(null)} disabled={busyDeleteId === d.id}>
                             Cancel
                           </Button>
                         </>
                       ) : (
-                        <>
-                          <Button size="sm" variant="outline" onClick={() => beginEdit(d)}>
-                            Edit
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleDelete(d.id)}
-                            className="text-destructive"
-                          >
-                            Delete
-                          </Button>
-                        </>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setPendingDeleteId(d.id)}
+                          className="text-destructive"
+                        >
+                          Delete
+                        </Button>
                       )}
                     </div>
-                  </td>
-                </tr>
+                  )}
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="px-4 py-2">Name</th>
+                    <th className="px-4 py-2">Code</th>
+                    <th className="px-4 py-2">Description</th>
+                    <th className="px-4 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {departments.map((d) => (
+                    <tr key={d.id} className="border-b last:border-b-0">
+                      <td className="px-4 py-2">
+                        {editingId === d.id ? (
+                          <Input
+                            value={editing.name || ''}
+                            onChange={(e) => setEditing((prev) => ({ ...prev, name: e.target.value }))}
+                          />
+                        ) : (
+                          d.name
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {editingId === d.id ? (
+                          <Input
+                            value={editing.code || ''}
+                            onChange={(e) => setEditing((prev) => ({ ...prev, code: e.target.value }))}
+                          />
+                        ) : (
+                          d.code || '-'
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {editingId === d.id ? (
+                          <Input
+                            value={editing.description || ''}
+                            onChange={(e) =>
+                              setEditing((prev) => ({ ...prev, description: e.target.value }))
+                            }
+                          />
+                        ) : (
+                          d.description || '-'
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <div className="flex justify-end gap-2">
+                          {editingId === d.id ? (
+                            <>
+                              <Button size="sm" onClick={() => void saveEdit(d.id)}>
+                                Save
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={cancelEdit}>
+                                Cancel
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button size="sm" variant="outline" onClick={() => beginEdit(d)}>
+                                Edit
+                              </Button>
+                              {pendingDeleteId === d.id ? (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => void handleDelete(d.id)}
+                                    disabled={busyDeleteId === d.id}
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  >
+                                    Confirm Delete
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => setPendingDeleteId(null)}
+                                    disabled={busyDeleteId === d.id}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setPendingDeleteId(d.id)}
+                                  className="text-destructive"
+                                >
+                                  Delete
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
     </div>

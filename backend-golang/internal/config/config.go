@@ -31,8 +31,13 @@ type Config struct {
 	SSORedirectURL  string
 
 	// AI Service
-	AIServiceURL    string
-	AIServiceAPIKey string
+	AIServiceURL       string
+	AIServiceAPIKey    string
+	FaceMatchThreshold float64
+	AIVectorizeTimeout time.Duration
+	AILivenessTimeout  time.Duration
+	AICompareTimeout   time.Duration
+	AIPinTimeout       time.Duration
 
 	// MQTT for IoT Door Relays
 	MQTTBrokerURL string
@@ -77,8 +82,13 @@ func Load() *Config {
 		SSOIssuerURL:    getEnv("SSO_ISSUER_URL", ""),
 		SSORedirectURL:  getEnv("SSO_REDIRECT_URL", ""),
 
-		AIServiceURL:    getEnv("AI_SERVICE_URL", "http://localhost:8000"),
-		AIServiceAPIKey: getEnv("AI_SERVICE_API_KEY", ""),
+		AIServiceURL:       getEnv("AI_SERVICE_URL", "http://localhost:8000"),
+		AIServiceAPIKey:    getEnv("AI_SERVICE_API_KEY", ""),
+		FaceMatchThreshold: parseFloat(getEnv("FACE_MATCH_THRESHOLD", "0.62"), 0.62),
+		AIVectorizeTimeout: parseDuration(getEnv("AI_VECTORIZE_TIMEOUT", "90s")),
+		AILivenessTimeout:  parseDuration(getEnv("AI_LIVENESS_TIMEOUT", "15s")),
+		AICompareTimeout:   parseDuration(getEnv("AI_COMPARE_TIMEOUT", "20s")),
+		AIPinTimeout:       parseDuration(getEnv("AI_PIN_TIMEOUT", "8s")),
 
 		MQTTBrokerURL: getEnv("MQTT_BROKER_URL", ""),
 		MQTTClientID:  getEnv("MQTT_CLIENT_ID", "attendance-api"),
@@ -128,6 +138,14 @@ func parseCORSOrigins(s string) []string {
 
 func parseInt(s string, def int) int {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func parseFloat(s string, def float64) float64 {
+	n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
 		return def
 	}
