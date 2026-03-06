@@ -108,7 +108,7 @@ jobs:
           path: ./backend-golang
 
       - name: Deploy to Render
-        uses: johnbeynon/render-deploy@v1.1.0
+        uses: johnbeynon/render-deploy-action
         with:
           service-id: ${{ secrets.RENDER_SERVICE_ID }}
           api-key: ${{ secrets.RENDER_API_KEY }}
