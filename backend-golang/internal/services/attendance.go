@@ -507,9 +507,8 @@ type CheckInResponse struct {
 // ProcessCheckIn processes a check-in/check-out request
 func (s *AttendanceService) ProcessCheckIn(ctx context.Context, tenantID string, req CheckInRequest) (*CheckInResponse, error) {
 	// Set tenant context for RLS
-	if err := s.db.QueryRow(ctx, "SET LOCAL app.current_tenant_id = $1", tenantID).Scan(); err != nil && err.Error() != "no rows in result set" {
-		// Ignore error for SET LOCAL
-	}
+	// Best-effort session context for RLS; failures are non-fatal for this request path.
+	_ = s.db.QueryRow(ctx, "SET LOCAL app.current_tenant_id = $1", tenantID).Scan()
 
 	// Get kiosk info
 	var kioskID uuid.UUID
