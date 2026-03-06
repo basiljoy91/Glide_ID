@@ -3,8 +3,8 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"regexp"
@@ -24,18 +24,18 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req struct {
 			Organization struct {
-				Name              string `json:"name"`
-				Industry          string `json:"industry"`
-				EstimatedEmployees int   `json:"estimated_employees"`
+				Name               string `json:"name"`
+				Industry           string `json:"industry"`
+				EstimatedEmployees int    `json:"estimated_employees"`
 			} `json:"organization"`
 			Admin struct {
-				Email      string `json:"email"`
-				FirstName  string `json:"first_name"`
-				LastName   string `json:"last_name"`
-				Phone      string `json:"phone"`
-				AuthMethod string `json:"auth_method"` // "sso" or "password"
-				Password   string `json:"password,omitempty"`
-				SSOEmail   string `json:"sso_email,omitempty"`
+				Email       string `json:"email"`
+				FirstName   string `json:"first_name"`
+				LastName    string `json:"last_name"`
+				Phone       string `json:"phone"`
+				AuthMethod  string `json:"auth_method"` // "sso" or "password"
+				Password    string `json:"password,omitempty"`
+				SSOEmail    string `json:"sso_email,omitempty"`
 				SSOProvider string `json:"sso_provider,omitempty"`
 			} `json:"admin"`
 			TeamMembers []struct {
@@ -96,9 +96,9 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 		}
 
 		settings := map[string]any{
-			"industry":            req.Organization.Industry,
-			"estimatedEmployees":  req.Organization.EstimatedEmployees,
-			"adminEmailDomain":    adminDomain,
+			"industry":           req.Organization.Industry,
+			"estimatedEmployees": req.Organization.EstimatedEmployees,
+			"adminEmailDomain":   adminDomain,
 		}
 		if ssoDomain != "" {
 			settings["sso_domain"] = ssoDomain
@@ -126,7 +126,9 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to begin transaction"})
 		}
-		defer tx.Rollback(ctx)
+		defer func() {
+			_ = tx.Rollback(ctx)
+		}()
 
 		// Insert tenant with retries for uniqueness
 		const maxAttempts = 10
@@ -253,4 +255,3 @@ func isUniqueViolation(err error) bool {
 	}
 	return strings.Contains(err.Error(), "duplicate key value violates unique constraint")
 }
-

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -130,7 +131,7 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		// Log audit
 		tenantUUID := uuid.MustParse(tenantID)
 		userUUID := uuid.MustParse(userID)
-		auditSvc.LogAction(c.Context(), &models.AuditLog{
+		if err := auditSvc.LogAction(c.Context(), &models.AuditLog{
 			TenantID:     &tenantUUID,
 			UserID:       &userUUID,
 			TargetUserID: &user.ID,
@@ -139,7 +140,9 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 			ResourceID:   &user.ID,
 			IPAddress:    stringPtr(c.IP()),
 			UserAgent:    stringPtr(c.Get("User-Agent")),
-		})
+		}); err != nil {
+			log.Printf("audit log failed for user_created: tenant=%s target=%s err=%v", tenantID, user.ID.String(), err)
+		}
 
 		return c.Status(fiber.StatusCreated).JSON(user)
 	}
@@ -204,7 +207,7 @@ func UpdateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		tenantUUID := uuid.MustParse(tenantID)
 		actorUUID := uuid.MustParse(actorUserID)
 		targetUUID := uuid.MustParse(targetUserID)
-		auditSvc.LogAction(c.Context(), &models.AuditLog{
+		if err := auditSvc.LogAction(c.Context(), &models.AuditLog{
 			TenantID:     &tenantUUID,
 			UserID:       &actorUUID,
 			TargetUserID: &targetUUID,
@@ -213,7 +216,9 @@ func UpdateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 			ResourceID:   &targetUUID,
 			IPAddress:    stringPtr(c.IP()),
 			UserAgent:    stringPtr(c.Get("User-Agent")),
-		})
+		}); err != nil {
+			log.Printf("audit log failed for user_updated: tenant=%s target=%s err=%v", tenantID, targetUserID, err)
+		}
 
 		return c.JSON(updated)
 	}
@@ -237,7 +242,7 @@ func DeleteUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		tenantUUID := uuid.MustParse(tenantID)
 		userUUID := uuid.MustParse(userID)
 		targetUUID := uuid.MustParse(targetUserID)
-		auditSvc.LogAction(c.Context(), &models.AuditLog{
+		if err := auditSvc.LogAction(c.Context(), &models.AuditLog{
 			TenantID:     &tenantUUID,
 			UserID:       &userUUID,
 			TargetUserID: &targetUUID,
@@ -246,7 +251,9 @@ func DeleteUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 			ResourceID:   &targetUUID,
 			IPAddress:    stringPtr(c.IP()),
 			UserAgent:    stringPtr(c.Get("User-Agent")),
-		})
+		}); err != nil {
+			log.Printf("audit log failed for user_deleted: tenant=%s target=%s err=%v", tenantID, targetUserID, err)
+		}
 
 		return c.JSON(fiber.Map{"message": "User deleted"})
 	}

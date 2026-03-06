@@ -552,24 +552,23 @@ func (s *AttendanceService) processBiometricCheckIn(
 	mqttTopic *string,
 ) (*CheckInResponse, error) {
 	// Enforce AI liveness checks before face matching to block spoof attacks.
-	livenessType := "active"
+	requestedLivenessType := "active"
 	if req.LivenessType != nil && *req.LivenessType != "" {
-		livenessType = *req.LivenessType
+		requestedLivenessType = *req.LivenessType
 	}
 	challengeType := "any"
 	if req.ChallengeType != nil && *req.ChallengeType != "" {
 		challengeType = *req.ChallengeType
 	}
-	livenessBody, err := s.callLiveness(ctx, req.ImageBase64, livenessType, challengeType, req.FramesBase64)
+	livenessBody, err := s.callLiveness(ctx, req.ImageBase64, requestedLivenessType, challengeType, req.FramesBase64)
 	if err != nil {
 		return nil, fmt.Errorf("liveness service request failed: %w", err)
 	}
 
-	if !livenessBody.IsLive && livenessType == "active" && !hardSpoofFromLivenessDetails(livenessBody.Details) {
+	if !livenessBody.IsLive && requestedLivenessType == "active" && !hardSpoofFromLivenessDetails(livenessBody.Details) {
 		passiveBody, perr := s.callLiveness(ctx, req.ImageBase64, "passive", "any", nil)
 		if perr == nil && passiveBody != nil {
 			livenessBody = passiveBody
-			livenessType = "passive"
 		}
 	}
 

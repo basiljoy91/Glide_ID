@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"enterprise-attendance-api/internal/models"
 
@@ -22,8 +23,11 @@ func NewUserService(db *pgxpool.Pool) *UserService {
 func (s *UserService) CreateUser(ctx context.Context, tenantID string, user *models.User) error {
 	user.ID = uuid.New()
 	user.TenantID = uuid.MustParse(tenantID)
-	user.CreatedAt = user.CreatedAt
-	user.UpdatedAt = user.UpdatedAt
+	now := time.Now().UTC()
+	if user.CreatedAt.IsZero() {
+		user.CreatedAt = now
+	}
+	user.UpdatedAt = now
 
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO users (

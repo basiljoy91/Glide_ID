@@ -101,7 +101,9 @@ func main() {
 	go func() {
 		<-c
 		log.Println("Shutting down server...")
-		app.Shutdown()
+		if err := app.Shutdown(); err != nil {
+			log.Printf("Server shutdown error: %v", err)
+		}
 	}()
 
 	// Start server

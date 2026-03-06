@@ -239,7 +239,9 @@ func UpdateOrganizationSubscription(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start transaction"})
 		}
-		defer tx.Rollback(ctx)
+		defer func() {
+			_ = tx.Rollback(ctx)
+		}()
 
 		var existingPlan string
 		err = tx.QueryRow(ctx, `SELECT subscription_tier::text FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&existingPlan)
