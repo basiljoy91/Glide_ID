@@ -230,7 +230,7 @@ This document outlines the comprehensive refactoring to match the enterprise spe
 - `app/(admin)/org-admin/` - Organization Admin portal
 - `app/kiosk/[code]/` - Enhanced kiosk portal
 - `components/ui/` - shadcn/ui components
-- `components/skeletons/` - Skeleton loaders
+- `components/skeletons/` - Skeleton loader
 - `lib/sso/` - SSO integration
 - `lib/integrations/` - HRMS connectors
 
