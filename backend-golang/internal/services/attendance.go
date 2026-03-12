@@ -489,6 +489,7 @@ type CheckInRequest struct {
 	LivenessType       *string  `json:"liveness_type"`  // "active" | "passive"
 	ChallengeType      *string  `json:"challenge_type"` // optional challenge
 	FramesBase64       []string `json:"frames_base64"`  // optional active challenge frames
+	ExplicitStatus     *string  `json:"explicit_status"` // "check_in" or "check_out", optional
 }
 
 // CheckInResponse represents the response
@@ -661,8 +662,13 @@ func (s *AttendanceService) processBiometricCheckIn(
 		}
 	}
 
-	// Determine check-in vs check-out based on last attendance
-	status := s.determineAttendanceStatus(ctx, userID, tenantID)
+	// Determine check-in vs check-out based on manual selection or fallback to last attendance
+	var status string
+	if req.ExplicitStatus != nil && (*req.ExplicitStatus == "check_in" || *req.ExplicitStatus == "check_out") {
+		status = *req.ExplicitStatus
+	} else {
+		status = s.determineAttendanceStatus(ctx, userID, tenantID)
+	}
 
 	// Create attendance log
 	attendanceLog := models.AttendanceLog{

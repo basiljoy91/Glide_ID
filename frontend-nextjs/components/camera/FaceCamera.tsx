@@ -162,23 +162,32 @@ export function FaceCamera({
 
   if (permissionStatus === 'denied') {
     return (
-      <div className="flex flex-col items-center justify-center p-8 bg-card rounded-lg border">
-        <div className="text-center space-y-4">
-          <div className="text-2xl">📷</div>
-          <h3 className="text-lg font-semibold">Camera Permission Required</h3>
-          <p className="text-muted-foreground">
-            Please enable camera permissions in your browser settings to continue.
-          </p>
-          <div className="text-sm text-muted-foreground space-y-2 mt-4">
-            <p><strong>Chrome/Edge:</strong> Click the lock icon in the address bar → Camera → Allow</p>
-            <p><strong>Firefox:</strong> Click the shield icon → Permissions → Camera → Allow</p>
-            <p><strong>Safari:</strong> Safari → Preferences → Websites → Camera → Allow</p>
+      <div className="flex flex-col items-center justify-center p-10 bg-red-50 dark:bg-red-950/20 rounded-xl border-2 border-red-500/50 shadow-inner min-h-[400px]">
+        <div className="text-center max-w-md space-y-6">
+          <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/40">
+            <span className="text-4xl">📷❌</span>
           </div>
+          <div>
+            <h3 className="text-2xl font-bold text-red-700 dark:text-red-400">Camera Access Blocked</h3>
+            <p className="text-red-600/90 dark:text-red-300/90 mt-2 font-medium">
+              We cannot load the kiosk because camera permissions are denied or unavailable.
+            </p>
+          </div>
+          
+          <div className="bg-background rounded-lg p-5 text-left border shadow-sm space-y-3">
+            <p className="font-semibold text-foreground text-sm">How to fix this:</p>
+            <ol className="list-decimal list-inside text-sm text-muted-foreground space-y-2">
+              <li>Look for the camera icon <span className="inline-flex bg-muted rounded px-1 px-1 text-xs">📹</span> in your browser's address bar.</li>
+              <li>Click it and change the setting to <strong>"Always allow"</strong>.</li>
+              <li>Or, check your operating system's Privacy & Security settings.</li>
+            </ol>
+          </div>
+          
           <button
             onClick={handleRetryPermission}
-            className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+            className="w-full h-12 text-base font-semibold bg-red-600 text-white hover:bg-red-700 rounded-lg shadow-sm transition-colors"
           >
-            Retry
+            I've enabled it, retry now
           </button>
         </div>
       </div>

@@ -19,6 +19,11 @@ export default function KioskPage() {
   const [networkStartTime] = useState(Date.now())
   const [hasConsented, setHasConsented] = useState(false)
   const [challengeType, setChallengeType] = useState<'turn_left' | 'turn_right' | 'blink' | 'move_closer'>('turn_left')
+  const [explicitStatus, setExplicitStatus] = useState<'auto' | 'check_in' | 'check_out'>('auto')
+  const [showPinModal, setShowPinModal] = useState(false)
+  const [pinInput, setPinInput] = useState('')
+  const [isPinSubmitting, setIsPinSubmitting] = useState(false)
+  
   const [successFlash, setSuccessFlash] = useState<{
     name?: string
     employeeId?: string
@@ -79,6 +84,7 @@ export default function KioskPage() {
             challenge_type: challengeType,
             frames_base64: metadata?.framesBase64 || [],
             has_consented: true,
+            ...(explicitStatus !== 'auto' && { explicit_status: explicitStatus }),
           })
           const signature = await hmacSha256Hex(kioskHmacSecret, `${body}${timestamp}${kioskCode}`)
           const response = await fetch(`${config.apiUrl}/api/v1/kiosk/check-in`, {
@@ -145,6 +151,68 @@ export default function KioskPage() {
       console.error('Check-in error:', error)
       toast.error(parseAndMapBiometricError(error?.message, 'Failed to process check-in'))
       pickNextChallenge()
+    }
+  }
+
+  const handlePinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!pinInput.trim()) {
+      toast.error('Please enter your Employee ID / PIN')
+      return
+    }
+    
+    setIsPinSubmitting(true)
+    try {
+      if (!isOnline || !navigator.onLine) {
+        throw new Error('PIN fallback requires an internet connection (cannot be queued offline currently).')
+      }
+      if (!kioskHmacSecret) {
+        throw new Error('Kiosk secret not configured on this device')
+      }
+      const timestamp = Math.floor(Date.now() / 1000).toString()
+      const body = JSON.stringify({
+        kiosk_code: kioskCode,
+        local_time: new Date().toISOString(),
+        monotonic_offset_ms: Date.now() - monotonicStart,
+        verification_method: 'pin',
+        pin_code: pinInput.trim(),
+        has_consented: true,
+        ...(explicitStatus !== 'auto' && { explicit_status: explicitStatus }),
+      })
+      const signature = await hmacSha256Hex(kioskHmacSecret, `${body}${timestamp}${kioskCode}`)
+      const response = await fetch(`${config.apiUrl}/api/v1/kiosk/check-in`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Kiosk-Code': kioskCode,
+          'X-Timestamp': timestamp,
+          'X-HMAC-Signature': signature,
+        },
+        body,
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        if (data?.success === true) {
+          setSuccessFlash({
+            name: data.user_name,
+            employeeId: data.employee_id,
+            status: data.status,
+            message: data.message || 'Check-in successful',
+          })
+          setPinInput('')
+          setShowPinModal(false)
+          setTimeout(() => setSuccessFlash(null), 2200)
+          return
+        }
+        throw new Error(data?.message || 'Invalid PIN or Employee ID')
+      }
+      const err = await response.json().catch(() => ({}))
+      throw new Error(err.error || err.message || 'Failed to verify PIN')
+    } catch (error: any) {
+      toast.error(error.message || 'An error occurred during PIN verification')
+    } finally {
+      setIsPinSubmitting(false)
     }
   }
 
@@ -228,26 +296,118 @@ export default function KioskPage() {
             </div>
           </div>
         ) : (
-          <FaceCamera
-            onCapture={handleCapture}
-            livenessType="active"
-            instruction={challengeInstruction[challengeType]}
-            showFlashlight={false}
-          />
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-muted/30 p-3 rounded-lg border">
+              <div className="text-sm font-medium">Record Action:</div>
+              <div className="flex gap-2 bg-background p-1 rounded-md border">
+                <button
+                  onClick={() => setExplicitStatus('auto')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded ${explicitStatus === 'auto' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:bg-muted'}`}
+                >
+                  Auto
+                </button>
+                <button
+                  onClick={() => setExplicitStatus('check_in')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded ${explicitStatus === 'check_in' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:bg-muted'}`}
+                >
+                  Check In
+                </button>
+                <button
+                  onClick={() => setExplicitStatus('check_out')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded ${explicitStatus === 'check_out' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:bg-muted'}`}
+                >
+                  Check Out
+                </button>
+              </div>
+            </div>
+            
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="md:col-span-2">
+                <FaceCamera
+                  onCapture={handleCapture}
+                  livenessType="active"
+                  instruction={challengeInstruction[challengeType]}
+                  showFlashlight={false}
+                />
+              </div>
+              <div className="space-y-4 text-sm text-muted-foreground bg-card border rounded-lg p-4">
+                <h3 className="font-semibold text-foreground border-b pb-2">Camera Guidelines</h3>
+                <ul className="space-y-2 list-none">
+                  <li className="flex items-start gap-2">
+                    <span>☀️</span>
+                    <span>Ensure good lighting on your face. Avoid standing with a window or bright light directly behind you.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span>👤</span>
+                    <span>Remove masks, dark sunglasses, or heavy hats.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span>👀</span>
+                    <span>Look straight at the camera and follow the liveness challenge below the video.</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
         )}
 
         <div className="mt-8 text-center">
           <button
-            onClick={() => {
-              // PIN fallback option
-              toast('PIN fallback not implemented in this demo')
-            }}
-            className="text-sm text-muted-foreground hover:text-foreground underline"
+            onClick={() => setShowPinModal(true)}
+            className="text-sm font-medium text-primary hover:underline hover:text-primary/80"
           >
-            Use PIN instead
+            Use PIN / ID Fallback
           </button>
         </div>
       </div>
+
+      {showPinModal && (
+        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-md rounded-xl shadow-xl border overflow-hidden">
+            <div className="p-6">
+              <h2 className="text-xl font-bold mb-2">PIN Fallback</h2>
+              <p className="text-muted-foreground text-sm mb-6">
+                If facial biometric recognition failed, or if you prefer not to use it, you can check in using your Employee ID or assigned PIN.
+              </p>
+              
+              <form onSubmit={handlePinSubmit} className="space-y-4">
+                <div>
+                  <label htmlFor="pin-input" className="block text-sm font-medium mb-1">Employee ID / PIN</label>
+                  <input
+                    id="pin-input"
+                    type="password"
+                    value={pinInput}
+                    onChange={(e) => setPinInput(e.target.value)}
+                    className="w-full flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    placeholder="Enter your ID or PIN"
+                    autoFocus
+                  />
+                </div>
+                
+                <div className="flex gap-3 justify-end pt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPinModal(false)
+                      setPinInput('')
+                    }}
+                    className="px-4 py-2 rounded-md hover:bg-muted font-medium text-sm transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isPinSubmitting || !pinInput.trim()}
+                    className="px-4 py-2 rounded-md bg-primary text-primary-foreground font-medium text-sm hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                  >
+                    {isPinSubmitting ? 'Verifying...' : 'Submit'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
