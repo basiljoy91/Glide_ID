@@ -53,6 +53,18 @@ func NewReportingService(db *pgxpool.Pool) *ReportingService {
 	return &ReportingService{db: db}
 }
 
+func (s *ReportingService) LogReportDelivery(ctx context.Context, tenantID, scheduleID, reportType, status, message string) error {
+	var scheduleRef *string
+	if scheduleID != "" {
+		scheduleRef = &scheduleID
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO report_delivery_logs (tenant_id, schedule_id, report_type, status, message)
+		VALUES ($1, $2, $3, $4, $5)
+	`, tenantID, scheduleRef, reportType, status, message)
+	return err
+}
+
 func (s *ReportingService) BuildAttendanceReport(ctx context.Context, tenantID, start, end, departmentID, userID, employeeID string, includeShift bool, lateGrace, earlyGrace int) (AttendanceReportResponse, error) {
 	args := []interface{}{tenantID, start, end}
 	where := `
@@ -108,12 +120,12 @@ func (s *ReportingService) BuildAttendanceReport(ctx context.Context, tenantID, 
 				COUNT(*) FILTER (
 					WHERE first_in IS NOT NULL
 					  AND shift_start_time IS NOT NULL
-					  AND first_in::time > (shift_start_time::time + ($%d || ' minutes')::interval)
+					  AND first_in::time > (shift_start_time::time + ($%d::int * INTERVAL '1 minute'))
 				) AS late_arrivals,
 				COUNT(*) FILTER (
 					WHERE last_out IS NOT NULL
 					  AND shift_end_time IS NOT NULL
-					  AND last_out::time < (shift_end_time::time - ($%d || ' minutes')::interval)
+					  AND last_out::time < (shift_end_time::time - ($%d::int * INTERVAL '1 minute'))
 				) AS early_departures
 			FROM user_day
 			GROUP BY day
@@ -194,12 +206,12 @@ func (s *ReportingService) BuildAttendanceReport(ctx context.Context, tenantID, 
 				COUNT(*) FILTER (
 					WHERE first_in IS NOT NULL
 					  AND shift_start_time IS NOT NULL
-					  AND first_in::time > (shift_start_time::time + ($%d || ' minutes')::interval)
+					  AND first_in::time > (shift_start_time::time + ($%d::int * INTERVAL '1 minute'))
 				) AS late_arrivals,
 				COUNT(*) FILTER (
 					WHERE last_out IS NOT NULL
 					  AND shift_end_time IS NOT NULL
-					  AND last_out::time < (shift_end_time::time - ($%d || ' minutes')::interval)
+					  AND last_out::time < (shift_end_time::time - ($%d::int * INTERVAL '1 minute'))
 				) AS early_departures
 			FROM user_day
 			GROUP BY shift_start_time, shift_end_time

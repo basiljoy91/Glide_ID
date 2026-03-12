@@ -16,6 +16,7 @@ type Services struct {
 	HRMS       *services.HRMSService
 	Audit      *services.AuditService
 	Reporting  *services.ReportingService
+	Email      services.EmailService
 }
 
 func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
@@ -144,6 +145,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			reports.Patch("/anomalies/bulk-resolve", handlers.BulkResolveAnomalies(svc.Attendance.GetDB()))
 			reports.Get("/attendance", handlers.GetAttendanceReport(svc.Reporting))
 			reports.Get("/attendance/pdf", handlers.ExportAttendancePDF(svc.Reporting))
+			reports.Post("/send-now", handlers.SendReportNow(svc.Reporting, svc.Email))
 			reports.Post("/export", handlers.ExportReport(svc.Attendance))
 			reports.Get("/schedules", handlers.ListReportSchedules(svc.Attendance.GetDB()))
 			reports.Post("/schedules", handlers.CreateReportSchedule(svc.Attendance.GetDB()))

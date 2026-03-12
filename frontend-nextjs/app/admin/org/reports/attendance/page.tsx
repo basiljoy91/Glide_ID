@@ -86,6 +86,9 @@ export default function AttendanceReportPage() {
   const [scheduleRecipients, setScheduleRecipients] = useState('')
   const [isScheduling, setIsScheduling] = useState(false)
 
+  const [sendRecipients, setSendRecipients] = useState('')
+  const [isSendingNow, setIsSendingNow] = useState(false)
+
   useEffect(() => {
     if (!isAuthenticated || !user) {
       router.push('/admin/login')
@@ -335,6 +338,50 @@ export default function AttendanceReportPage() {
     }
   }
 
+  const sendNow = async () => {
+    if (!sendRecipients.trim()) {
+      toast.error('Recipients are required')
+      return
+    }
+    try {
+      setIsSendingNow(true)
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+      const recipients = sendRecipients
+        .split(',')
+        .map((r) => r.trim())
+        .filter(Boolean)
+
+      const resp = await fetch(`${base}/api/v1/reports/send-now`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          recipients,
+          start_date: startDate,
+          end_date: endDate,
+          department_id: departmentId || undefined,
+          employee_id: employeeId.trim() || undefined,
+          late_grace_minutes: Number(lateGrace || 10),
+          early_grace_minutes: Number(earlyGrace || 10),
+        }),
+      })
+      const payload = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(payload.error || 'Failed to send report')
+      }
+      if (payload.message_id) {
+        toast.success(`Report sent (Message ID: ${payload.message_id})`)
+      } else {
+        toast.success('Report sent')
+      }
+      setSendRecipients('')
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to send report')
+    } finally {
+      setIsSendingNow(false)
+    }
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -531,6 +578,19 @@ export default function AttendanceReportPage() {
         <div>
           <div className="text-lg font-semibold">Scheduled report delivery</div>
           <div className="text-sm text-muted-foreground">Email automated attendance summaries to your team.</div>
+        </div>
+        <div className="border rounded-md p-3 space-y-2">
+          <div className="text-sm font-medium">Send now</div>
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2">
+            <Input
+              value={sendRecipients}
+              onChange={(e) => setSendRecipients(e.target.value)}
+              placeholder="hr@company.com, ops@company.com"
+            />
+            <Button onClick={sendNow} disabled={isSendingNow}>
+              {isSendingNow ? 'Sending…' : 'Send now'}
+            </Button>
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>

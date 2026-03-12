@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -27,6 +28,10 @@ type EmailService interface {
 	SendEmail(ctx context.Context, msg EmailMessage) error
 }
 
+type EmailServiceWithID interface {
+	SendEmailWithID(ctx context.Context, msg EmailMessage) (string, error)
+}
+
 type BrevoEmailService struct {
 	apiKey    string
 	fromEmail string
@@ -46,11 +51,16 @@ func NewBrevoEmailService(apiKey, fromEmail, fromName string) *BrevoEmailService
 }
 
 func (s *BrevoEmailService) SendEmail(ctx context.Context, msg EmailMessage) error {
+	_, err := s.SendEmailWithID(ctx, msg)
+	return err
+}
+
+func (s *BrevoEmailService) SendEmailWithID(ctx context.Context, msg EmailMessage) (string, error) {
 	if s.apiKey == "" || s.fromEmail == "" {
-		return fmt.Errorf("brevo api key and from email are required")
+		return "", fmt.Errorf("brevo api key and from email are required")
 	}
 	if len(msg.To) == 0 {
-		return fmt.Errorf("email recipients are required")
+		return "", fmt.Errorf("email recipients are required")
 	}
 
 	type recipient struct {
@@ -94,24 +104,34 @@ func (s *BrevoEmailService) SendEmail(ctx context.Context, msg EmailMessage) err
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.brevo.com/v3/smtp/email", bytes.NewBuffer(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("api-key", s.apiKey)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("brevo send failed: status %d", resp.StatusCode)
+		return "", fmt.Errorf("brevo send failed: status %d", resp.StatusCode)
 	}
-	return nil
+
+	messageID := ""
+	if bodyBytes, err := io.ReadAll(resp.Body); err == nil && len(bodyBytes) > 0 {
+		var payload struct {
+			MessageID string `json:"messageId"`
+		}
+		if json.Unmarshal(bodyBytes, &payload) == nil {
+			messageID = payload.MessageID
+		}
+	}
+	return messageID, nil
 }

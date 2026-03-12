@@ -103,6 +103,7 @@ func main() {
 		HRMS:       hrmsService,
 		Audit:      auditService,
 		Reporting:  reportingService,
+		Email:      emailSvc,
 	}, cfg)
 
 	if emailSvc != nil {
