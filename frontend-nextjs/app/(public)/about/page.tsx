@@ -142,9 +142,9 @@ export default function AboutPage() {
         <h2 className="text-3xl font-display font-semibold">Leadership & team</h2>
         <div className="grid gap-6 md:grid-cols-3">
           {[
-            { name: 'Basil Joy', role: 'Founder & Engineer', img: '/team/basil-joy.svg' },
-            { name: 'Security Lead', role: 'Liveness & Threat Modeling', img: '/team/avatar-neutral.svg' },
-            { name: 'Platform Ops', role: 'SRE & Compliance', img: '/team/avatar-neutral.svg' },
+            { name: 'Basil Joy', role: 'Founder & Engineer', img: '/team/basil.jpeg' },
+            /*{ name: 'Security Lead', role: 'Liveness & Threat Modeling', img: '/team/avatar-neutral.svg' },
+            { name: 'Platform Ops', role: 'SRE & Compliance', img: '/team/avatar-neutral.svg' },*/
           ].map((member) => (
             <div key={member.name} className="rounded-2xl border bg-background/80 p-4">
               <img src={member.img} alt={member.name} className="w-full rounded-xl border" />
