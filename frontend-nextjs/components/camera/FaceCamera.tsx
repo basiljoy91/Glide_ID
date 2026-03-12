@@ -35,44 +35,7 @@ export function FaceCamera({
   const { isDark } = useAmbientLight()
   const [showFlashlightOverlay, setShowFlashlightOverlay] = useState(false)
 
-  // Initialize camera on mount
-  useEffect(() => {
-    checkCameraPermission()
-  }, [checkCameraPermission])
-
-  // Cleanup: stop camera tracks when stream changes or component unmounts
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop())
-      }
-    }
-  }, [stream])
-
-  useEffect(() => {
-    if (isDark && showFlashlight) {
-      setShowFlashlightOverlay(true)
-    } else {
-      setShowFlashlightOverlay(false)
-    }
-  }, [isDark, showFlashlight])
-
-  const checkCameraPermission = useCallback(async () => {
-    try {
-      const result = await navigator.permissions.query({ name: 'camera' as PermissionName })
-      setPermissionStatus(result.state as 'granted' | 'denied' | 'prompt')
-      
-      if (result.state === 'granted') {
-        startCamera()
-      }
-    } catch (error) {
-      // Fallback for browsers that don't support Permissions API
-      startCamera()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const startCamera = async () => {
+  const startCamera = useCallback(async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -95,7 +58,43 @@ export function FaceCamera({
       }
       toast.error('Camera access denied. Please enable camera permissions.')
     }
-  }
+  }, [onError])
+
+  const checkCameraPermission = useCallback(async () => {
+    try {
+      const result = await navigator.permissions.query({ name: 'camera' as PermissionName })
+      setPermissionStatus(result.state as 'granted' | 'denied' | 'prompt')
+      
+      if (result.state === 'granted') {
+        startCamera()
+      }
+    } catch (error) {
+      // Fallback for browsers that don't support Permissions API
+      startCamera()
+    }
+  }, [startCamera])
+
+  // Initialize camera on mount
+  useEffect(() => {
+    checkCameraPermission()
+  }, [checkCameraPermission])
+
+  // Cleanup: stop camera tracks when stream changes or component unmounts
+  useEffect(() => {
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop())
+      }
+    }
+  }, [stream])
+
+  useEffect(() => {
+    if (isDark && showFlashlight) {
+      setShowFlashlightOverlay(true)
+    } else {
+      setShowFlashlightOverlay(false)
+    }
+  }, [isDark, showFlashlight])
 
   const capturePhoto = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) return
