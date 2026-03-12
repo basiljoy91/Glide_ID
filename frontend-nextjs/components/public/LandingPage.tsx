@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Shield, Users, Clock, Zap, Lock, BarChart3, Play } from 'lucide-react'
 import { KioskCodeLauncher } from '@/components/kiosk/KioskCodeLauncher'
@@ -56,9 +57,11 @@ export function LandingPage() {
           </div>
           <div className="relative">
             <div className="absolute -top-6 -left-6 h-16 w-16 rounded-2xl bg-primary/20 blur-xl" />
-            <img
+            <Image
               src="/hero-visual.svg"
               alt="Biometric mesh visualization"
+              width={1000}
+              height={760}
               className="w-full rounded-3xl border bg-background shadow-xl animate-float-slow"
             />
             <div className="absolute -bottom-6 left-6 rounded-2xl border bg-background/90 p-4 shadow-lg animate-float">
@@ -146,7 +149,13 @@ export function LandingPage() {
                 <Play className="h-4 w-4" />
               </Button>
             </div>
-            <img src="/demo-frame.svg" alt="Product demo frame" className="mt-6 rounded-2xl" />
+            <Image
+              src="/demo-frame.svg"
+              alt="Product demo frame"
+              width={900}
+              height={560}
+              className="mt-6 rounded-2xl"
+            />
           </div>
         </div>
       </section>
