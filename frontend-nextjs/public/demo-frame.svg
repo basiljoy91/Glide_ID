@@ -1,0 +1,17 @@
+<svg width="900" height="520" viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Product demo">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="520" rx="36" fill="url(#g)"/>
+  <rect x="40" y="40" width="820" height="440" rx="24" fill="#0b1220" stroke="#1f2937"/>
+  <circle cx="450" cy="260" r="70" fill="#0f172a" stroke="#334155"/>
+  <polygon points="435,235 435,285 485,260" fill="#38bdf8"/>
+  <g fill="#94a3b8" font-family="'Segoe UI', sans-serif" font-size="16">
+    <text x="80" y="90">Live liveness check</text>
+    <text x="80" y="120">Vector match</text>
+    <text x="80" y="150">Door unlock</text>
+  </g>
+</svg>
