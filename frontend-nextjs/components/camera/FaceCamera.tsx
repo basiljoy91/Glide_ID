@@ -35,14 +35,19 @@ export function FaceCamera({
   const { isDark } = useAmbientLight()
   const [showFlashlightOverlay, setShowFlashlightOverlay] = useState(false)
 
+  // Initialize camera on mount
   useEffect(() => {
     checkCameraPermission()
+  }, [checkCameraPermission])
+
+  // Cleanup: stop camera tracks when stream changes or component unmounts
+  useEffect(() => {
     return () => {
       if (stream) {
         stream.getTracks().forEach(track => track.stop())
       }
     }
-  }, [])
+  }, [stream])
 
   useEffect(() => {
     if (isDark && showFlashlight) {
@@ -52,7 +57,7 @@ export function FaceCamera({
     }
   }, [isDark, showFlashlight])
 
-  const checkCameraPermission = async () => {
+  const checkCameraPermission = useCallback(async () => {
     try {
       const result = await navigator.permissions.query({ name: 'camera' as PermissionName })
       setPermissionStatus(result.state as 'granted' | 'denied' | 'prompt')
@@ -64,7 +69,8 @@ export function FaceCamera({
       // Fallback for browsers that don't support Permissions API
       startCamera()
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const startCamera = async () => {
     try {
