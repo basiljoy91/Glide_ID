@@ -26,6 +26,7 @@ interface User {
   first_name: string
   last_name: string
   email: string
+  role?: string
 }
 
 export default function OrgDepartmentsPage() {
@@ -82,15 +83,22 @@ export default function OrgDepartmentsPage() {
 
   const fetchUsers = async () => {
     try {
+      const params = new URLSearchParams()
+      params.set('limit', '500')
+      params.set('page', '1')
       const resp = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/users`,
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/users?${params.toString()}`,
         {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         }
       )
       if (resp.ok) {
         const data = await resp.json()
-        setUsers(Array.isArray(data) ? data : [])
+        if (Array.isArray(data)) {
+          setUsers(data)
+        } else {
+          setUsers(Array.isArray(data.data) ? data.data : [])
+        }
       }
     } catch (e: any) {
       console.error('Failed to load users for managers list', e)
@@ -290,7 +298,7 @@ export default function OrgDepartmentsPage() {
               <option value="">-- Unassigned --</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.first_name} {u.last_name} ({u.email})
+                  {u.first_name} {u.last_name} ({u.email}{u.role ? ` • ${u.role}` : ''})
                 </option>
               ))}
             </select>
@@ -357,7 +365,7 @@ export default function OrgDepartmentsPage() {
                         <option value="">-- Unassigned --</option>
                         {users.map((u) => (
                           <option key={u.id} value={u.id}>
-                            {u.first_name} {u.last_name}
+                            {u.first_name} {u.last_name}{u.role ? ` • ${u.role}` : ''}
                           </option>
                         ))}
                       </select>
@@ -462,7 +470,7 @@ export default function OrgDepartmentsPage() {
                             <option value="">-- Unassigned --</option>
                             {users.map((u) => (
                               <option key={u.id} value={u.id}>
-                                {u.first_name} {u.last_name}
+                                {u.first_name} {u.last_name}{u.role ? ` • ${u.role}` : ''}
                               </option>
                             ))}
                           </select>

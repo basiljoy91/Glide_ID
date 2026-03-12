@@ -131,7 +131,7 @@ func (s *ReportingService) BuildAttendanceReport(ctx context.Context, tenantID, 
 		ORDER BY day ASC
 	`, where, lateArg, earlyArg), args...)
 	if err != nil {
-		return AttendanceReportResponse{}, fmt.Errorf("Failed to generate report")
+		return AttendanceReportResponse{}, fmt.Errorf("failed to generate report: %w", err)
 	}
 	defer rows.Close()
 
@@ -150,7 +150,7 @@ func (s *ReportingService) BuildAttendanceReport(ctx context.Context, tenantID, 
 		var day time.Time
 		var ci, co, an, logs, late, early int
 		if err := rows.Scan(&day, &ci, &co, &an, &logs, &late, &early); err != nil {
-			return AttendanceReportResponse{}, fmt.Errorf("Failed to read report")
+			return AttendanceReportResponse{}, fmt.Errorf("failed to read report: %w", err)
 		}
 		resp.Days = append(resp.Days, AttendanceReportDay{
 			Date:            day.Format("2006-01-02"),
@@ -212,7 +212,7 @@ func (s *ReportingService) BuildAttendanceReport(ctx context.Context, tenantID, 
 				var endTime *string
 				var users, ci, co, late, early int
 				if err := shiftRows.Scan(&startTime, &endTime, &users, &ci, &co, &late, &early); err != nil {
-					return AttendanceReportResponse{}, fmt.Errorf("Failed to read shift summary")
+					return AttendanceReportResponse{}, fmt.Errorf("failed to read shift summary: %w", err)
 				}
 				resp.ShiftSummary = append(resp.ShiftSummary, ShiftSummaryRow{
 					ShiftStart:      startTime,

@@ -176,6 +176,7 @@ CREATE TABLE kiosks (
     code VARCHAR(10) NOT NULL, -- References tenant.kiosk_code or sub-code
     hmac_secret VARCHAR(255) NOT NULL, -- For request signing
     status kiosk_status NOT NULL DEFAULT 'active',
+    location TEXT,
     ip_whitelist TEXT[], -- Future: IP restrictions
     geolocation_restrictions JSONB, -- Future: Lat/long boundaries
     last_heartbeat_at TIMESTAMPTZ,

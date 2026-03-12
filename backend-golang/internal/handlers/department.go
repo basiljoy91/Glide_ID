@@ -12,10 +12,10 @@ import (
 )
 
 type DepartmentDTO struct {
-	ID          uuid.UUID  `json:"id"`
-	Name        string     `json:"name"`
-	Code        *string    `json:"code,omitempty"`
-	Description *string    `json:"description,omitempty"`
+	ID            uuid.UUID  `json:"id"`
+	Name          string     `json:"name"`
+	Code          *string    `json:"code,omitempty"`
+	Description   *string    `json:"description,omitempty"`
 	ManagerID     *uuid.UUID `json:"manager_id,omitempty"`
 	ManagerName   *string    `json:"manager_name,omitempty"`
 	EmployeeCount int        `json:"employee_count"`
@@ -82,6 +82,19 @@ func CreateDepartment(db *pgxpool.Pool) fiber.Handler {
 			})
 		}
 
+		if body.ManagerID != nil {
+			var exists bool
+			if err := db.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+				)
+			`, body.ManagerID, tenantID).Scan(&exists); err != nil || !exists {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Invalid manager_id",
+				})
+			}
+		}
+
 		var d DepartmentDTO
 		err := db.QueryRow(ctx, `
 			INSERT INTO departments (
@@ -95,6 +108,16 @@ func CreateDepartment(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to create department",
 			})
+		}
+
+		if body.ManagerID != nil {
+			_, _ = db.Exec(ctx, `
+				UPDATE users
+				SET department_id = $1,
+					role = CASE WHEN role = 'employee' THEN 'dept_manager' ELSE role END,
+					updated_at = NOW()
+				WHERE id = $2 AND tenant_id = $3 AND deleted_at IS NULL
+			`, d.ID, body.ManagerID, tenantID)
 		}
 
 		return c.Status(fiber.StatusCreated).JSON(d)
@@ -123,6 +146,19 @@ func UpdateDepartment(db *pgxpool.Pool) fiber.Handler {
 			})
 		}
 
+		if body.ManagerID != nil {
+			var exists bool
+			if err := db.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+				)
+			`, body.ManagerID, tenantID).Scan(&exists); err != nil || !exists {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Invalid manager_id",
+				})
+			}
+		}
+
 		var d DepartmentDTO
 		err := db.QueryRow(ctx, `
 			UPDATE departments
@@ -142,6 +178,16 @@ func UpdateDepartment(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to update department",
 			})
+		}
+
+		if body.ManagerID != nil {
+			_, _ = db.Exec(ctx, `
+				UPDATE users
+				SET department_id = $1,
+					role = CASE WHEN role = 'employee' THEN 'dept_manager' ELSE role END,
+					updated_at = NOW()
+				WHERE id = $2 AND tenant_id = $3 AND deleted_at IS NULL
+			`, d.ID, body.ManagerID, tenantID)
 		}
 
 		return c.JSON(d)
@@ -171,4 +217,3 @@ func DeleteDepartment(db *pgxpool.Pool) fiber.Handler {
 		return c.JSON(fiber.Map{"success": true})
 	}
 }
-
