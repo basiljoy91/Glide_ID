@@ -124,12 +124,12 @@ export default function OrgAdminDashboardPage() {
     }
   }
 
-  if (!isAuthenticated || !user) return null
-
   const rangeLabel = useMemo(() => {
     if (!metrics?.rangeStart || !metrics?.rangeEnd) return 'Selected range'
     return `${metrics.rangeStart} → ${metrics.rangeEnd}`
   }, [metrics?.rangeStart, metrics?.rangeEnd])
+
+  if (!isAuthenticated || !user) return null
 
   const exportMetrics = async () => {
     try {

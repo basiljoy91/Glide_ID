@@ -109,11 +109,11 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {/* Today's Check-ins */}
+        {/* Today&apos;s Check-ins */}
         <div className="bg-card border rounded-lg p-6 shadow-sm col-span-1 md:col-span-2 lg:col-span-1 border-primary/20 bg-primary/5">
           <div className="flex items-center gap-3 mb-4">
             <span className="text-2xl">🕒</span>
-            <h2 className="text-xl font-semibold">Today's Activity</h2>
+            <h2 className="text-xl font-semibold">Today&apos;s Activity</h2>
           </div>
           
           {isLoading ? (
@@ -233,4 +233,3 @@ export default function DashboardPage() {
     </div>
   )
 }
-

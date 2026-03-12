@@ -177,9 +177,9 @@ export function FaceCamera({
           <div className="bg-background rounded-lg p-5 text-left border shadow-sm space-y-3">
             <p className="font-semibold text-foreground text-sm">How to fix this:</p>
             <ol className="list-decimal list-inside text-sm text-muted-foreground space-y-2">
-              <li>Look for the camera icon <span className="inline-flex bg-muted rounded px-1 px-1 text-xs">📹</span> in your browser's address bar.</li>
-              <li>Click it and change the setting to <strong>"Always allow"</strong>.</li>
-              <li>Or, check your operating system's Privacy & Security settings.</li>
+              <li>Look for the camera icon <span className="inline-flex bg-muted rounded px-1 px-1 text-xs">📹</span> in your browser&apos;s address bar.</li>
+              <li>Click it and change the setting to <strong>&quot;Always allow&quot;</strong>.</li>
+              <li>Or, check your operating system&apos;s Privacy &amp; Security settings.</li>
             </ol>
           </div>
           
@@ -187,7 +187,7 @@ export function FaceCamera({
             onClick={handleRetryPermission}
             className="w-full h-12 text-base font-semibold bg-red-600 text-white hover:bg-red-700 rounded-lg shadow-sm transition-colors"
           >
-            I've enabled it, retry now
+            I&apos;ve enabled it, retry now
           </button>
         </div>
       </div>
