@@ -1,41 +1,56 @@
-'use client'
+import type { Metadata } from 'next'
+
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://glide-id.example'
+
+export const metadata: Metadata = {
+  title: 'Terms of Service | Glide ID',
+  description: 'Terms of service for Glide ID usage, acceptable use, and responsibilities.',
+  metadataBase: new URL(siteUrl),
+  alternates: { canonical: '/terms' },
+}
 
 export default function TermsPage() {
   return (
-    <div className="container mx-auto px-4 py-16">
-      <div className="max-w-3xl space-y-6">
-        <h1 className="text-4xl font-bold tracking-tight">Terms of Service</h1>
+    <div className="container mx-auto px-4 py-16 space-y-10">
+      <div className="max-w-3xl space-y-4">
+        <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+          Terms of service
+        </div>
+        <h1 className="text-4xl font-display font-semibold tracking-tight">Usage terms</h1>
         <p className="text-muted-foreground">
-          This is a template Terms of Service page for Glide ID. Replace with your finalized legal
-          text before production launch.
+          These terms define how Glide ID may be used, responsibilities for administrators, and
+          acceptable use of biometric services.
         </p>
+      </div>
 
-        <div className="space-y-4 text-sm text-muted-foreground">
-          <div className="border rounded-lg p-5 bg-card">
-            <div className="font-medium text-foreground mb-2">Service description</div>
-            <p>
-              Glide ID provides tenant-scoped attendance tracking, identity verification, and kiosk
-              workflows. Organizations are responsible for user onboarding, policy configuration,
-              and lawful basis for biometric processing.
-            </p>
-          </div>
-          <div className="border rounded-lg p-5 bg-card">
-            <div className="font-medium text-foreground mb-2">Acceptable use</div>
-            <p>
-              You agree not to misuse the service, bypass security controls, or attempt to access
-              data belonging to other tenants. Suspicious activity may be logged and restricted.
-            </p>
-          </div>
-          <div className="border rounded-lg p-5 bg-card">
-            <div className="font-medium text-foreground mb-2">Disclaimer</div>
-            <p>
-              This template is provided for development and demo purposes only and does not
-              constitute legal advice.
-            </p>
-          </div>
+      <div className="grid gap-6 md:grid-cols-2">
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Service description</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Glide ID provides tenant-scoped attendance tracking, identity verification, and kiosk
+            workflows.
+          </p>
+        </div>
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Customer responsibilities</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Organizations are responsible for lawful biometric processing, onboarding users, and
+            configuring retention policies.
+          </p>
+        </div>
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Acceptable use</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            You may not attempt to bypass security controls or access data across tenants.
+          </p>
+        </div>
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Disclaimer</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This content is a template for product demos and is not legal advice.
+          </p>
         </div>
       </div>
     </div>
   )
 }
-

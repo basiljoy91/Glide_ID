@@ -5,13 +5,14 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Check, Minus, HelpCircle } from 'lucide-react'
 
-type Currency = 'USD' | 'EUR' | 'GBP'
+type Currency = 'USD' | 'EUR' | 'GBP' | 'INR'
 type BillingCycle = 'monthly' | 'annual'
 
 const CURRENCIES: Record<Currency, { symbol: string; rate: number }> = {
   USD: { symbol: '$', rate: 1 },
   EUR: { symbol: '€', rate: 0.92 },
   GBP: { symbol: '£', rate: 0.79 },
+  INR: { symbol: '₹', rate: 92 },
 }
 
 const PLANS = [
@@ -171,6 +172,7 @@ export default function PricingPage() {
             <option value="USD">USD ($)</option>
             <option value="EUR">EUR (€)</option>
             <option value="GBP">GBP (£)</option>
+            <option value="INR">INR (₹)</option>
           </select>
         </div>
       </div>

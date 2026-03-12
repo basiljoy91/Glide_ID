@@ -1,42 +1,58 @@
-'use client'
+import type { Metadata } from 'next'
+
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://glide-id.example'
+
+export const metadata: Metadata = {
+  title: 'Privacy Policy | Glide ID',
+  description:
+    'Privacy policy for Glide ID. Understand how biometric data is processed, protected, and retained.',
+  metadataBase: new URL(siteUrl),
+  alternates: { canonical: '/privacy' },
+}
 
 export default function PrivacyPage() {
   return (
-    <div className="container mx-auto px-4 py-16">
-      <div className="max-w-3xl space-y-6">
-        <h1 className="text-4xl font-bold tracking-tight">Privacy Policy</h1>
+    <div className="container mx-auto px-4 py-16 space-y-10">
+      <div className="max-w-3xl space-y-4">
+        <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
+          Privacy policy
+        </div>
+        <h1 className="text-4xl font-display font-semibold tracking-tight">Privacy by design</h1>
         <p className="text-muted-foreground">
-          This is a template privacy policy page for Glide ID. Replace this with your finalized
-          legal text before production launch.
+          Glide ID is built to minimize biometric exposure. We encrypt vectors, isolate tenants,
+          and enforce retention windows to meet GDPR/CCPA expectations.
         </p>
+      </div>
 
-        <div className="space-y-4 text-sm text-muted-foreground">
-          <div className="border rounded-lg p-5 bg-card">
-            <div className="font-medium text-foreground mb-2">Biometric data</div>
-            <p>
-              When enabled by an organization, Glide ID may collect facial images to generate
-              encrypted biometric templates for identity verification. Templates are used for
-              attendance, access control, anomaly detection, and security auditing.
-            </p>
-          </div>
-          <div className="border rounded-lg p-5 bg-card">
-            <div className="font-medium text-foreground mb-2">Tenant isolation</div>
-            <p>
-              Customer data is logically separated by tenant. Access is controlled by role-based
-              permissions and database policies designed to prevent cross-tenant access.
-            </p>
-          </div>
-          <div className="border rounded-lg p-5 bg-card">
-            <div className="font-medium text-foreground mb-2">Retention & deletion</div>
-            <p>
-              Organizations control retention periods. Terminated employee biometric templates can
-              be purged automatically after a retention window (e.g., 30 days) depending on
-              configuration and legal requirements.
-            </p>
-          </div>
+      <div className="grid gap-6 md:grid-cols-2">
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Biometric processing</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Facial images are vectorized in the AI service and raw images are not stored.
+            Encrypted vectors are used for attendance and access control only.
+          </p>
+        </div>
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Tenant isolation</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Tenant-scoped access controls and row-level security prevent cross-organization data
+            exposure.
+          </p>
+        </div>
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Retention & deletion</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Terminated employee biometric vectors are purged automatically after policy-defined
+            windows (for example, 30 days).
+          </p>
+        </div>
+        <div className="rounded-2xl border bg-background/80 p-6">
+          <div className="font-semibold">Audit visibility</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            All administrative actions are logged for compliance review and anomaly investigations.
+          </p>
         </div>
       </div>
     </div>
   )
 }
-

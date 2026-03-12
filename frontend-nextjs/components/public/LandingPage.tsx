@@ -8,10 +8,10 @@ export function LandingPage() {
   return (
     <div className="flex flex-col">
       <section className="relative overflow-hidden">
-        <div className="absolute inset-0 hero-grid opacity-60" />
-        <div className="absolute -top-32 -right-20 h-72 w-72 rounded-full bg-emerald-400/20 blur-3xl" />
-        <div className="absolute -bottom-40 -left-20 h-80 w-80 rounded-full bg-sky-500/20 blur-3xl" />
-        <div className="container mx-auto grid gap-12 px-4 py-20 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
+        <div className="pointer-events-none absolute inset-0 hero-grid opacity-60" />
+        <div className="pointer-events-none absolute -top-32 -right-20 h-72 w-72 rounded-full bg-emerald-400/20 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-40 -left-20 h-80 w-80 rounded-full bg-sky-500/20 blur-3xl" />
+        <div className="container mx-auto relative z-10 grid gap-12 px-4 py-20 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
           <div className="space-y-6">
             <div className="inline-flex items-center gap-2 rounded-full border bg-background/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-muted-foreground">
               Zero trust attendance
