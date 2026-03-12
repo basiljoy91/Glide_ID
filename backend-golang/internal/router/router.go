@@ -99,6 +99,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		{
 			kiosks.Get("/", handlers.ListKiosks(svc.Attendance.GetDB()))
 			kiosks.Post("/", handlers.CreateKiosk(svc.Attendance.GetDB()))
+			kiosks.Get("/:id/history", handlers.GetKioskHistory(svc.Attendance.GetDB()))
 			kiosks.Post("/:id/rotate-secret", handlers.RotateKioskSecret(svc.Attendance.GetDB()))
 			kiosks.Put("/:id", handlers.UpdateKiosk(svc.Attendance.GetDB()))
 			kiosks.Delete("/:id", handlers.RevokeKiosk(svc.Attendance.GetDB()))
@@ -113,6 +114,11 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			hrms.Put("/integrations/:id", handlers.UpdateHRMSIntegration(svc.HRMS))
 			hrms.Patch("/integrations/:id/toggle", handlers.ToggleHRMSIntegration(svc.HRMS))
 			hrms.Post("/integrations/:id/test", handlers.TestHRMSIntegration(svc.HRMS))
+			hrms.Get("/integrations/:id/schedule", handlers.GetHRMSSyncSchedule(svc.HRMS))
+			hrms.Put("/integrations/:id/schedule", handlers.UpsertHRMSSyncSchedule(svc.HRMS))
+			hrms.Delete("/integrations/:id/schedule", handlers.DeleteHRMSSyncSchedule(svc.HRMS))
+			hrms.Get("/integrations/:id/sync-logs", handlers.ListHRMSSyncLogs(svc.HRMS))
+			hrms.Post("/integrations/:id/sync", handlers.RunHRMSSync(svc.HRMS))
 			hrms.Post("/webhooks/:provider", handlers.ProcessHRMSWebhook(svc.HRMS))
 			hrms.Post("/export/timesheet", handlers.ExportTimesheet(svc.HRMS))
 		}
@@ -136,7 +142,13 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			reports.Patch("/anomalies/:id/resolve", handlers.ResolveAnomaly(svc.Attendance.GetDB()))
 			reports.Patch("/anomalies/bulk-resolve", handlers.BulkResolveAnomalies(svc.Attendance.GetDB()))
 			reports.Get("/attendance", handlers.GetAttendanceReport(svc.Attendance.GetDB()))
+			reports.Get("/attendance/pdf", handlers.ExportAttendancePDF(svc.Attendance.GetDB()))
 			reports.Post("/export", handlers.ExportReport(svc.Attendance))
+			reports.Get("/schedules", handlers.ListReportSchedules(svc.Attendance.GetDB()))
+			reports.Post("/schedules", handlers.CreateReportSchedule(svc.Attendance.GetDB()))
+			reports.Delete("/schedules/:id", handlers.DeleteReportSchedule(svc.Attendance.GetDB()))
+			reports.Post("/schedules/:id/run", handlers.RunReportSchedule(svc.Attendance.GetDB()))
+			reports.Get("/schedules/:id/logs", handlers.ListReportDeliveryLogs(svc.Attendance.GetDB()))
 		}
 		// Employee Dashboard
 		employee := api.Group("/employee")

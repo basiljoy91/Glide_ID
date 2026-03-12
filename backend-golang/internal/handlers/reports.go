@@ -287,22 +287,38 @@ func ResolveAnomaly(db *pgxpool.Pool) fiber.Handler {
 }
 
 type attendanceReportDay struct {
-	Date      string `json:"date"`
-	CheckIns  int    `json:"check_ins"`
-	CheckOuts int    `json:"check_outs"`
-	Anomalies int    `json:"anomalies"`
+	Date            string `json:"date"`
+	CheckIns        int    `json:"check_ins"`
+	CheckOuts       int    `json:"check_outs"`
+	Anomalies       int    `json:"anomalies"`
+	LateArrivals    int    `json:"late_arrivals"`
+	EarlyDepartures int    `json:"early_departures"`
+}
+
+type shiftSummaryRow struct {
+	ShiftStart      *string `json:"shift_start_time,omitempty"`
+	ShiftEnd        *string `json:"shift_end_time,omitempty"`
+	Users           int     `json:"users"`
+	CheckIns        int     `json:"check_ins"`
+	CheckOuts       int     `json:"check_outs"`
+	LateArrivals    int     `json:"late_arrivals"`
+	EarlyDepartures int     `json:"early_departures"`
 }
 
 type attendanceReportResponse struct {
 	StartDate string                `json:"start_date"`
 	EndDate   string                `json:"end_date"`
+	Filters   map[string]string     `json:"filters,omitempty"`
 	Days      []attendanceReportDay `json:"days"`
 	Totals    struct {
-		CheckIns  int `json:"check_ins"`
-		CheckOuts int `json:"check_outs"`
-		Anomalies int `json:"anomalies"`
-		Logs      int `json:"logs"`
+		CheckIns        int `json:"check_ins"`
+		CheckOuts       int `json:"check_outs"`
+		Anomalies       int `json:"anomalies"`
+		Logs            int `json:"logs"`
+		LateArrivals    int `json:"late_arrivals"`
+		EarlyDepartures int `json:"early_departures"`
 	} `json:"totals"`
+	ShiftSummary []shiftSummaryRow `json:"shift_summary,omitempty"`
 }
 
 // GetAttendanceReport returns daily attendance counts for a date range (default last 7 days).
@@ -312,58 +328,219 @@ func GetAttendanceReport(db *pgxpool.Pool) fiber.Handler {
 
 		start := c.Query("start_date", time.Now().AddDate(0, 0, -6).Format("2006-01-02"))
 		end := c.Query("end_date", time.Now().Format("2006-01-02"))
+		departmentID := strings.TrimSpace(c.Query("department_id"))
+		userID := strings.TrimSpace(c.Query("user_id"))
+		employeeID := strings.TrimSpace(c.Query("employee_id"))
+		includeShift := c.Query("include_shift_summary", "true")
+		lateGrace := c.QueryInt("late_grace_minutes", 10)
+		earlyGrace := c.QueryInt("early_grace_minutes", 10)
 
 		startT, err1 := time.Parse("2006-01-02", start)
 		endT, err2 := time.Parse("2006-01-02", end)
 		if err1 != nil || err2 != nil || endT.Before(startT) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid date range"})
 		}
+		if lateGrace < 0 || lateGrace > 180 {
+			lateGrace = 10
+		}
+		if earlyGrace < 0 || earlyGrace > 180 {
+			earlyGrace = 10
+		}
+		if userID != "" {
+			if _, err := uuid.Parse(userID); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user_id"})
+			}
+		}
+		if departmentID != "" {
+			if _, err := uuid.Parse(departmentID); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid department_id"})
+			}
+		}
 
 		ctx, cancel := context.WithTimeout(c.Context(), 7*time.Second)
 		defer cancel()
 
-		rows, err := db.Query(ctx, `
-			SELECT d::date AS day,
-				COALESCE(COUNT(al.id) FILTER (WHERE al.status = 'check_in'), 0) AS check_ins,
-				COALESCE(COUNT(al.id) FILTER (WHERE al.status = 'check_out'), 0) AS check_outs,
-				COALESCE(COUNT(al.id) FILTER (WHERE al.anomaly_detected = true), 0) AS anomalies,
-				COALESCE(COUNT(al.id), 0) AS logs
-			FROM generate_series($2::date, $3::date, INTERVAL '1 day') d
-			LEFT JOIN attendance_logs al
-			  ON al.tenant_id = $1
-			 AND al.punch_time::date = d::date
-			GROUP BY day
-			ORDER BY day ASC
-		`, tenantID, start, end)
+		resp, err := buildAttendanceReport(ctx, db, tenantID, start, end, departmentID, userID, employeeID, strings.ToLower(includeShift) != "false", lateGrace, earlyGrace)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to generate report"})
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
-		defer rows.Close()
-
-		resp := attendanceReportResponse{
-			StartDate: start,
-			EndDate:   end,
-			Days:      []attendanceReportDay{},
-		}
-
-		for rows.Next() {
-			var day time.Time
-			var ci, co, an, logs int
-			if err := rows.Scan(&day, &ci, &co, &an, &logs); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read report"})
-			}
-			resp.Days = append(resp.Days, attendanceReportDay{
-				Date:      day.Format("2006-01-02"),
-				CheckIns:  ci,
-				CheckOuts: co,
-				Anomalies: an,
-			})
-			resp.Totals.CheckIns += ci
-			resp.Totals.CheckOuts += co
-			resp.Totals.Anomalies += an
-			resp.Totals.Logs += logs
-		}
-
 		return c.JSON(resp)
 	}
+}
+
+func buildAttendanceReport(ctx context.Context, db *pgxpool.Pool, tenantID, start, end, departmentID, userID, employeeID string, includeShift bool, lateGrace, earlyGrace int) (attendanceReportResponse, error) {
+	args := []interface{}{tenantID, start, end}
+	where := `
+		al.tenant_id = $1
+		AND al.punch_time::date >= $2::date
+		AND al.punch_time::date <= $3::date
+	`
+	if userID != "" {
+		where += fmt.Sprintf(" AND al.user_id = $%d", len(args)+1)
+		args = append(args, userID)
+	}
+	if departmentID != "" {
+		where += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+		args = append(args, departmentID)
+	}
+	if employeeID != "" {
+		where += fmt.Sprintf(" AND u.employee_id = $%d", len(args)+1)
+		args = append(args, employeeID)
+	}
+
+	args = append(args, lateGrace, earlyGrace)
+	lateArg := len(args) - 1
+	earlyArg := len(args)
+
+	rows, err := db.Query(ctx, fmt.Sprintf(`
+		WITH filtered_logs AS (
+			SELECT al.id, al.user_id, al.status, al.punch_time, al.anomaly_detected,
+				u.shift_start_time, u.shift_end_time
+			FROM attendance_logs al
+			JOIN users u ON u.id = al.user_id
+			WHERE %s
+		),
+		daily_counts AS (
+			SELECT punch_time::date AS day,
+				COUNT(*) FILTER (WHERE status = 'check_in') AS check_ins,
+				COUNT(*) FILTER (WHERE status = 'check_out') AS check_outs,
+				COUNT(*) FILTER (WHERE anomaly_detected = true) AS anomalies,
+				COUNT(*) AS logs
+			FROM filtered_logs
+			GROUP BY day
+		),
+		user_day AS (
+			SELECT user_id, punch_time::date AS day,
+				MIN(punch_time) FILTER (WHERE status = 'check_in') AS first_in,
+				MAX(punch_time) FILTER (WHERE status = 'check_out') AS last_out,
+				MAX(shift_start_time) AS shift_start_time,
+				MAX(shift_end_time) AS shift_end_time
+			FROM filtered_logs
+			GROUP BY user_id, day
+		),
+		late_early AS (
+			SELECT day,
+				COUNT(*) FILTER (
+					WHERE first_in IS NOT NULL
+					  AND shift_start_time IS NOT NULL
+					  AND first_in::time > (shift_start_time::time + ($%d || ' minutes')::interval)
+				) AS late_arrivals,
+				COUNT(*) FILTER (
+					WHERE last_out IS NOT NULL
+					  AND shift_end_time IS NOT NULL
+					  AND last_out::time < (shift_end_time::time - ($%d || ' minutes')::interval)
+				) AS early_departures
+			FROM user_day
+			GROUP BY day
+		)
+		SELECT d::date AS day,
+			COALESCE(dc.check_ins, 0) AS check_ins,
+			COALESCE(dc.check_outs, 0) AS check_outs,
+			COALESCE(dc.anomalies, 0) AS anomalies,
+			COALESCE(dc.logs, 0) AS logs,
+			COALESCE(le.late_arrivals, 0) AS late_arrivals,
+			COALESCE(le.early_departures, 0) AS early_departures
+		FROM generate_series($2::date, $3::date, INTERVAL '1 day') d
+		LEFT JOIN daily_counts dc ON dc.day = d::date
+		LEFT JOIN late_early le ON le.day = d::date
+		ORDER BY day ASC
+	`, where, lateArg, earlyArg), args...)
+	if err != nil {
+		return attendanceReportResponse{}, fmt.Errorf("Failed to generate report")
+	}
+	defer rows.Close()
+
+	resp := attendanceReportResponse{
+		StartDate: start,
+		EndDate:   end,
+		Days:      []attendanceReportDay{},
+		Filters: map[string]string{
+			"department_id": departmentID,
+			"user_id":       userID,
+			"employee_id":   employeeID,
+		},
+	}
+
+	for rows.Next() {
+		var day time.Time
+		var ci, co, an, logs, late, early int
+		if err := rows.Scan(&day, &ci, &co, &an, &logs, &late, &early); err != nil {
+			return attendanceReportResponse{}, fmt.Errorf("Failed to read report")
+		}
+		resp.Days = append(resp.Days, attendanceReportDay{
+			Date:            day.Format("2006-01-02"),
+			CheckIns:        ci,
+			CheckOuts:       co,
+			Anomalies:       an,
+			LateArrivals:    late,
+			EarlyDepartures: early,
+		})
+		resp.Totals.CheckIns += ci
+		resp.Totals.CheckOuts += co
+		resp.Totals.Anomalies += an
+		resp.Totals.Logs += logs
+		resp.Totals.LateArrivals += late
+		resp.Totals.EarlyDepartures += early
+	}
+
+	if includeShift {
+		shiftRows, err := db.Query(ctx, fmt.Sprintf(`
+			WITH filtered_logs AS (
+				SELECT al.user_id, al.status, al.punch_time,
+					u.shift_start_time, u.shift_end_time
+				FROM attendance_logs al
+				JOIN users u ON u.id = al.user_id
+				WHERE %s
+			),
+			user_day AS (
+				SELECT user_id, punch_time::date AS day,
+					MIN(punch_time) FILTER (WHERE status = 'check_in') AS first_in,
+					MAX(punch_time) FILTER (WHERE status = 'check_out') AS last_out,
+					MAX(shift_start_time) AS shift_start_time,
+					MAX(shift_end_time) AS shift_end_time
+				FROM filtered_logs
+				GROUP BY user_id, day
+			)
+			SELECT
+				shift_start_time, shift_end_time,
+				COUNT(DISTINCT user_id) AS users,
+				COUNT(*) FILTER (WHERE first_in IS NOT NULL) AS check_ins,
+				COUNT(*) FILTER (WHERE last_out IS NOT NULL) AS check_outs,
+				COUNT(*) FILTER (
+					WHERE first_in IS NOT NULL
+					  AND shift_start_time IS NOT NULL
+					  AND first_in::time > (shift_start_time::time + ($%d || ' minutes')::interval)
+				) AS late_arrivals,
+				COUNT(*) FILTER (
+					WHERE last_out IS NOT NULL
+					  AND shift_end_time IS NOT NULL
+					  AND last_out::time < (shift_end_time::time - ($%d || ' minutes')::interval)
+				) AS early_departures
+			FROM user_day
+			GROUP BY shift_start_time, shift_end_time
+			ORDER BY shift_start_time, shift_end_time
+		`, where, lateArg, earlyArg), args...)
+		if err == nil {
+			defer shiftRows.Close()
+			for shiftRows.Next() {
+				var startTime *string
+				var endTime *string
+				var users, ci, co, late, early int
+				if err := shiftRows.Scan(&startTime, &endTime, &users, &ci, &co, &late, &early); err != nil {
+					return attendanceReportResponse{}, fmt.Errorf("Failed to read shift summary")
+				}
+				resp.ShiftSummary = append(resp.ShiftSummary, shiftSummaryRow{
+					ShiftStart:      startTime,
+					ShiftEnd:        endTime,
+					Users:           users,
+					CheckIns:        ci,
+					CheckOuts:       co,
+					LateArrivals:    late,
+					EarlyDepartures: early,
+				})
+			}
+		}
+	}
+
+	return resp, nil
 }

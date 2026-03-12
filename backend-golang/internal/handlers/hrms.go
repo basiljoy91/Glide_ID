@@ -186,6 +186,128 @@ func TestHRMSIntegration(hrmsSvc *services.HRMSService) fiber.Handler {
 	}
 }
 
+// GetHRMSSyncSchedule returns sync schedule for an integration.
+func GetHRMSSyncSchedule(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Integration ID is required"})
+		}
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		out, err := hrmsSvc.GetSyncSchedule(ctx, tenantID, id)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load schedule"})
+		}
+		if out == nil {
+			return c.JSON(fiber.Map{"schedule": nil})
+		}
+		return c.JSON(out)
+	}
+}
+
+// UpsertHRMSSyncSchedule creates or updates sync schedule.
+func UpsertHRMSSyncSchedule(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Integration ID is required"})
+		}
+
+		var body services.UpsertHRMSSyncScheduleInput
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		out, err := hrmsSvc.UpsertSyncSchedule(ctx, tenantID, id, body)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(out)
+	}
+}
+
+// DeleteHRMSSyncSchedule removes sync schedule for an integration.
+func DeleteHRMSSyncSchedule(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Integration ID is required"})
+		}
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		if err := hrmsSvc.DeleteSyncSchedule(ctx, tenantID, id); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete schedule"})
+		}
+		return c.JSON(fiber.Map{"success": true})
+	}
+}
+
+// ListHRMSSyncLogs returns sync history for an integration.
+func ListHRMSSyncLogs(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Integration ID is required"})
+		}
+		limit := c.QueryInt("limit", 50)
+		offset := c.QueryInt("offset", 0)
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		out, err := hrmsSvc.ListSyncLogs(ctx, tenantID, id, limit, offset)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load sync logs"})
+		}
+		return c.JSON(out)
+	}
+}
+
+// RunHRMSSync runs a manual sync (stub) and logs it.
+func RunHRMSSync(hrmsSvc *services.HRMSService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Integration ID is required"})
+		}
+		var body struct {
+			Message string `json:"message"`
+		}
+		_ = c.BodyParser(&body)
+		if body.Message == "" {
+			body.Message = "Manual sync triggered"
+		}
+		ctx, cancel := context.WithTimeout(c.Context(), 7*time.Second)
+		defer cancel()
+		out, err := hrmsSvc.RunSync(ctx, tenantID, id, body.Message)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to run sync"})
+		}
+		return c.JSON(out)
+	}
+}
+
 // ExportTimesheet exports timesheet data
 func ExportTimesheet(hrmsSvc *services.HRMSService) fiber.Handler {
 	return func(c *fiber.Ctx) error {

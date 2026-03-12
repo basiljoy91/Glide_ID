@@ -16,9 +16,11 @@ type DepartmentDTO struct {
 	Name        string     `json:"name"`
 	Code        *string    `json:"code,omitempty"`
 	Description *string    `json:"description,omitempty"`
-	ManagerID   *uuid.UUID `json:"manager_id,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ManagerID     *uuid.UUID `json:"manager_id,omitempty"`
+	ManagerName   *string    `json:"manager_name,omitempty"`
+	EmployeeCount int        `json:"employee_count"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // ListDepartments lists departments for the current tenant
@@ -29,10 +31,14 @@ func ListDepartments(db *pgxpool.Pool) fiber.Handler {
 		defer cancel()
 
 		rows, err := db.Query(ctx, `
-			SELECT id, name, code, description, manager_id, created_at, updated_at
-			FROM departments
-			WHERE tenant_id = $1 AND deleted_at IS NULL
-			ORDER BY name ASC
+			SELECT 
+				d.id, d.name, d.code, d.description, d.manager_id, d.created_at, d.updated_at,
+				(SELECT COUNT(*) FROM users u WHERE u.department_id = d.id AND u.is_active = true) as employee_count,
+				m.first_name || ' ' || m.last_name as manager_name
+			FROM departments d
+			LEFT JOIN users m ON m.id = d.manager_id
+			WHERE d.tenant_id = $1 AND d.deleted_at IS NULL
+			ORDER BY d.name ASC
 		`, tenantID)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -44,7 +50,7 @@ func ListDepartments(db *pgxpool.Pool) fiber.Handler {
 		departments := make([]DepartmentDTO, 0)
 		for rows.Next() {
 			var d DepartmentDTO
-			if err := rows.Scan(&d.ID, &d.Name, &d.Code, &d.Description, &d.ManagerID, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			if err := rows.Scan(&d.ID, &d.Name, &d.Code, &d.Description, &d.ManagerID, &d.CreatedAt, &d.UpdatedAt, &d.EmployeeCount, &d.ManagerName); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "Failed to read departments",
 				})

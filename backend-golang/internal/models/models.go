@@ -55,6 +55,7 @@ type Kiosk struct {
 	Code            string     `json:"code"`
 	HMACSecret      string     `json:"-"` // Never expose in JSON
 	Status          string     `json:"status"`
+	Location        *string    `json:"location"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at"`
 	MQTTTopic       *string    `json:"mqtt_topic"`
 	CreatedAt       time.Time  `json:"created_at"`

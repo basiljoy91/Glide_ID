@@ -15,8 +15,17 @@ interface Department {
   code?: string | null
   description?: string | null
   manager_id?: string | null
+  manager_name?: string | null
+  employee_count?: number
   created_at: string
   updated_at: string
+}
+
+interface User {
+  id: string
+  first_name: string
+  last_name: string
+  email: string
 }
 
 export default function OrgDepartmentsPage() {
@@ -30,8 +39,10 @@ export default function OrgDepartmentsPage() {
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editing, setEditing] = useState<Partial<Department>>({})
+  const [managerId, setManagerId] = useState<string>('')
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [busyDeleteId, setBusyDeleteId] = useState<string | null>(null)
+  const [users, setUsers] = useState<User[]>([])
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -43,6 +54,7 @@ export default function OrgDepartmentsPage() {
       return
     }
     fetchDepartments()
+    fetchUsers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, user?.role])
 
@@ -68,6 +80,23 @@ export default function OrgDepartmentsPage() {
     }
   }
 
+  const fetchUsers = async () => {
+    try {
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/users`,
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }
+      )
+      if (resp.ok) {
+        const data = await resp.json()
+        setUsers(Array.isArray(data) ? data : [])
+      }
+    } catch (e: any) {
+      console.error('Failed to load users for managers list', e)
+    }
+  }
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) {
@@ -88,6 +117,7 @@ export default function OrgDepartmentsPage() {
             name,
             code: code || undefined,
             description: description || undefined,
+            manager_id: managerId || undefined,
           }),
         }
       )
@@ -99,6 +129,7 @@ export default function OrgDepartmentsPage() {
       setName('')
       setCode('')
       setDescription('')
+      setManagerId('')
       await fetchDepartments()
     } catch (e: any) {
       toast.error(e.message || 'Failed to create department')
@@ -137,6 +168,7 @@ export default function OrgDepartmentsPage() {
       name: d.name,
       code: d.code || '',
       description: d.description || '',
+      manager_id: d.manager_id || '',
     })
   }
 
@@ -163,6 +195,7 @@ export default function OrgDepartmentsPage() {
             name: editing.name,
             code: editing.code || null,
             description: editing.description || null,
+            manager_id: editing.manager_id || null,
           }),
         }
       )
@@ -196,6 +229,16 @@ export default function OrgDepartmentsPage() {
           title="Total Departments"
           value={Array.isArray(departments) ? departments.length : 0}
           subtitle="Within your organization"
+        />
+        <DataCard
+          title="Departments with Managers"
+          value={departments.filter(d => !!d.manager_id).length}
+          subtitle="Departments that have assigned leads"
+        />
+        <DataCard
+          title="Total Assigned Employees"
+          value={departments.reduce((sum, d) => sum + (d.employee_count || 0), 0)}
+          subtitle="Across all departments"
         />
       </div>
 
@@ -236,6 +279,22 @@ export default function OrgDepartmentsPage() {
               className="mt-1"
             />
           </div>
+          <div>
+            <Label htmlFor="dept-manager">Manager</Label>
+            <select
+              id="dept-manager"
+              value={managerId}
+              onChange={(e) => setManagerId(e.target.value)}
+              className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="">-- Unassigned --</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.first_name} {u.last_name} ({u.email})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <Button type="submit" disabled={saving}>
           {saving ? 'Saving...' : 'Create Department'}
@@ -266,6 +325,12 @@ export default function OrgDepartmentsPage() {
                     <div className="font-medium">{d.name}</div>
                     <div className="text-xs text-muted-foreground">Code: {d.code || '—'}</div>
                     <div className="text-xs text-muted-foreground">Description: {d.description || '—'}</div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Manager: {d.manager_name || <span className="text-amber-600">Unassigned</span>}
+                    </div>
+                    <div className="text-xs font-semibold mt-1">
+                      Employees: {d.employee_count || 0}
+                    </div>
                   </div>
                   {editingId === d.id ? (
                     <div className="space-y-2">
@@ -284,6 +349,18 @@ export default function OrgDepartmentsPage() {
                         onChange={(e) => setEditing((prev) => ({ ...prev, description: e.target.value }))}
                         placeholder="Description"
                       />
+                      <select
+                        value={editing.manager_id || ''}
+                        onChange={(e) => setEditing((prev) => ({ ...prev, manager_id: e.target.value }))}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <option value="">-- Unassigned --</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.first_name} {u.last_name}
+                          </option>
+                        ))}
+                      </select>
                       <div className="flex gap-2">
                         <Button size="sm" onClick={() => void saveEdit(d.id)}>
                           Save
@@ -335,6 +412,8 @@ export default function OrgDepartmentsPage() {
                     <th className="px-4 py-2">Name</th>
                     <th className="px-4 py-2">Code</th>
                     <th className="px-4 py-2">Description</th>
+                    <th className="px-4 py-2">Manager</th>
+                    <th className="px-4 py-2 text-right">Employees</th>
                     <th className="px-4 py-2 text-right">Actions</th>
                   </tr>
                 </thead>
@@ -372,6 +451,27 @@ export default function OrgDepartmentsPage() {
                         ) : (
                           d.description || '-'
                         )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {editingId === d.id ? (
+                          <select
+                            value={editing.manager_id || ''}
+                            onChange={(e) => setEditing((prev) => ({ ...prev, manager_id: e.target.value }))}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                          >
+                            <option value="">-- Unassigned --</option>
+                            {users.map((u) => (
+                              <option key={u.id} value={u.id}>
+                                {u.first_name} {u.last_name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          d.manager_name || <span className="text-amber-600 text-xs">Unassigned</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-right font-semibold">
+                        {d.employee_count || 0}
                       </td>
                       <td className="px-4 py-2 text-right">
                         <div className="flex justify-end gap-2">

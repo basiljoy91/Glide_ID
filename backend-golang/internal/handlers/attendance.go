@@ -245,6 +245,9 @@ func exportAttendanceCSV(c *fiber.Ctx, svc *services.AttendanceService, filePref
 	startDate := c.Query("start_date", time.Now().AddDate(0, 0, -6).Format("2006-01-02"))
 	endDate := c.Query("end_date", time.Now().Format("2006-01-02"))
 	status := c.Query("status")
+	departmentID := c.Query("department_id")
+	userID := c.Query("user_id")
+	employeeID := c.Query("employee_id")
 
 	startT, err1 := time.Parse("2006-01-02", startDate)
 	endT, err2 := time.Parse("2006-01-02", endDate)
@@ -264,6 +267,18 @@ func exportAttendanceCSV(c *fiber.Ctx, svc *services.AttendanceService, filePref
 	if status != "" {
 		where += fmt.Sprintf(" AND al.status = $%d", len(args)+1)
 		args = append(args, status)
+	}
+	if userID != "" {
+		where += fmt.Sprintf(" AND al.user_id = $%d", len(args)+1)
+		args = append(args, userID)
+	}
+	if departmentID != "" {
+		where += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+		args = append(args, departmentID)
+	}
+	if employeeID != "" {
+		where += fmt.Sprintf(" AND u.employee_id = $%d", len(args)+1)
+		args = append(args, employeeID)
 	}
 
 	rows, err := svc.GetDB().Query(ctx, fmt.Sprintf(`

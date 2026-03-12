@@ -11,7 +11,14 @@ interface Kiosk {
   name: string
   code: string
   status: string
+  location?: string | null
   last_heartbeat_at?: string | null
+}
+
+interface KioskHistory {
+  date: string
+  uptime: string
+  incidents: number
 }
 
 const STATUS_OPTIONS = ['all', 'active', 'inactive', 'maintenance', 'revoked'] as const
@@ -27,6 +34,21 @@ export default function OrgKiosksPage() {
   const [pendingRotateId, setPendingRotateId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rotatedSecret, setRotatedSecret] = useState<{ code: string; secret: string } | null>(null)
+
+  // New features state
+  const [isAddOpen, setIsAddOpen] = useState(false)
+  const [addName, setAddName] = useState('')
+  const [addCode, setAddCode] = useState('')
+  const [addLocation, setAddLocation] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+
+  const [editId, setEditId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editLocation, setEditLocation] = useState('')
+
+  const [historyKioskId, setHistoryKioskId] = useState<string | null>(null)
+  const [historyData, setHistoryData] = useState<KioskHistory[]>([])
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -59,6 +81,99 @@ export default function OrgKiosksPage() {
       toast.error(e.message || 'Failed to load kiosks')
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!addName.trim() || !addCode.trim()) {
+      toast.error('Name and Code are required')
+      return
+    }
+    try {
+      setIsSaving(true)
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/kiosks`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ name: addName, code: addCode, location: addLocation }),
+        }
+      )
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to create kiosk')
+      }
+      toast.success('Kiosk created successfully')
+      setIsAddOpen(false)
+      setAddName('')
+      setAddCode('')
+      setAddLocation('')
+      await fetchKiosks()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to create kiosk')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const beginEdit = (k: Kiosk) => {
+    setEditId(k.id)
+    setEditName(k.name)
+    setEditLocation(k.location || '')
+  }
+
+  const saveEdit = async () => {
+    if (!editId) return
+    try {
+      setIsSaving(true)
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/kiosks/${editId}`,
+        {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ name: editName, location: editLocation }),
+        }
+      )
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update kiosk')
+      }
+      toast.success('Kiosk updated')
+      setEditId(null)
+      await fetchKiosks()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update kiosk')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const viewHistory = async (id: string) => {
+    try {
+      setHistoryKioskId(id)
+      setIsLoadingHistory(true)
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/kiosks/${id}/history`,
+        { headers }
+      )
+      if (resp.ok) {
+        const data = await resp.json()
+        setHistoryData(data)
+      } else {
+        throw new Error('Could not fetch history')
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to fetch kiosk history')
+      setHistoryKioskId(null)
+    } finally {
+      setIsLoadingHistory(false)
     }
   }
 
@@ -137,12 +252,88 @@ export default function OrgKiosksPage() {
 
   return (
     <div className="container mx-auto px-4 py-8 space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold mb-2">Kiosks</h1>
-        <p className="text-muted-foreground">
-          Monitor and manage active check-in kiosks. Revoke compromised devices instantly.
-        </p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold mb-2">Kiosks</h1>
+          <p className="text-muted-foreground">
+            Monitor and manage active check-in kiosks. Revoke compromised devices instantly.
+          </p>
+        </div>
+        <Button onClick={() => setIsAddOpen(true)}>Add New Kiosk</Button>
       </div>
+
+      {isAddOpen && (
+        <form onSubmit={handleAdd} className="border rounded-lg p-4 space-y-4 bg-card">
+          <h2 className="font-semibold">Add New Kiosk</h2>
+          <div className="grid md:grid-cols-3 gap-4">
+            <div>
+              <label className="text-sm font-medium mb-1 block">Name *</label>
+              <input
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={addName}
+                onChange={(e) => setAddName(e.target.value)}
+                placeholder="Lobby iPad"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-1 block">Pairing Code *</label>
+              <input
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={addCode}
+                onChange={(e) => setAddCode(e.target.value)}
+                placeholder="10-digit code"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-1 block">Location / Floor</label>
+              <input
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={addLocation}
+                onChange={(e) => setAddLocation(e.target.value)}
+                placeholder="Ground Floor Reception"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button type="submit" disabled={isSaving}>
+              {isSaving ? 'Creating...' : 'Create Kiosk'}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setIsAddOpen(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {historyKioskId && (
+        <div className="border rounded-lg bg-card p-4 space-y-4">
+          <div className="flex justify-between items-center">
+            <h2 className="font-semibold">Uptime History (Last 7 Days)</h2>
+            <Button size="sm" variant="ghost" onClick={() => setHistoryKioskId(null)}>Close</Button>
+          </div>
+          {isLoadingHistory ? (
+            <div className="skeleton h-20 w-full" />
+          ) : (
+            <div className="flex justify-between items-end gap-2 overflow-x-auto pb-2">
+              {historyData.map((day, i) => {
+                const height = parseFloat(day.uptime)
+                return (
+                  <div key={i} className="flex flex-col items-center gap-2 flex-col-reverse group relative">
+                    <div className="text-xs text-muted-foreground whitespace-nowrap">{new Date(day.date).toLocaleDateString(undefined, { weekday: 'short' })}</div>
+                    <div className="w-10 rounded-t-sm" style={{ 
+                      height: `${height}px`, 
+                      backgroundColor: height > 99 ? 'hsl(142.1 76.2% 36.3%)' : height > 95 ? 'hsl(47.9 95.8% 53.1%)' : 'hsl(0 84.2% 60.2%)'
+                    }} />
+                    <div className="absolute -top-8 bg-popover text-popover-foreground text-xs p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+                      {day.uptime}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {rotatedSecret && (
         <div className="border rounded-lg bg-card p-4 space-y-3">
@@ -210,19 +401,33 @@ export default function OrgKiosksPage() {
               {kiosks.map((k) => (
                 <div key={k.id} className="p-4 space-y-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-medium">{k.name}</div>
-                      <div className="text-xs font-mono text-muted-foreground">{k.code}</div>
-                    </div>
-                    <span
-                      className={
-                        k.status === 'active'
-                          ? 'text-xs text-green-600 dark:text-green-300'
-                          : 'text-xs text-muted-foreground'
-                      }
-                    >
-                      {k.status}
-                    </span>
+                    {editId === k.id ? (
+                      <div className="flex flex-col gap-2 w-full">
+                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={editName} onChange={e => setEditName(e.target.value)} />
+                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={editLocation} onChange={e => setEditLocation(e.target.value)} placeholder="Location" />
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={saveEdit} disabled={isSaving}>Save</Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditId(null)}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <div className="font-medium">{k.name}</div>
+                          <div className="text-xs font-mono text-muted-foreground">{k.code}</div>
+                          {k.location && <div className="text-xs text-muted-foreground mt-1">📍 {k.location}</div>}
+                        </div>
+                        <span
+                          className={
+                            k.status === 'active'
+                              ? 'text-xs text-green-600 dark:text-green-300'
+                              : 'text-xs text-muted-foreground'
+                          }
+                        >
+                          {k.status}
+                        </span>
+                      </>
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground">
                     Health:{' '}
@@ -253,16 +458,25 @@ export default function OrgKiosksPage() {
                           <Button size="sm" onClick={() => void revokeKiosk(k.id)} disabled={busyId === k.id} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
                             Confirm Revoke
                           </Button>
-                          <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(null)} disabled={busyId === k.id}>
-                            Cancel
+                              <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(null)} disabled={busyId === k.id}>
+                                Cancel
+                              </Button>
+                            </>
+                          ) : (
+                            <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(k.id)} className="text-destructive hover:text-destructive/80">
+                              Revoke
+                            </Button>
+                          )}
+
+                          {editId !== k.id && (
+                            <Button size="sm" variant="outline" onClick={() => beginEdit(k)}>
+                              Edit
+                            </Button>
+                          )}
+                          <Button size="sm" variant="outline" onClick={() => viewHistory(k.id)}>
+                            History
                           </Button>
-                        </>
-                      ) : (
-                        <Button size="sm" variant="outline" onClick={() => setPendingRevokeId(k.id)} className="text-destructive hover:text-destructive/80">
-                          Revoke
-                        </Button>
-                      )}
-                    </div>
+                        </div>
                   )}
                 </div>
               ))}
@@ -274,6 +488,7 @@ export default function OrgKiosksPage() {
                   <tr className="border-b text-left">
                     <th className="px-4 py-2">Name</th>
                     <th className="px-4 py-2">Code</th>
+                    <th className="px-4 py-2">Location</th>
                     <th className="px-4 py-2">Status</th>
                     <th className="px-4 py-2">Health</th>
                     <th className="px-4 py-2">Last Heartbeat</th>
@@ -283,8 +498,21 @@ export default function OrgKiosksPage() {
                 <tbody>
                   {kiosks.map((k) => (
                     <tr key={k.id} className="border-b last:border-b-0 align-top">
-                      <td className="px-4 py-2">{k.name}</td>
+                      <td className="px-4 py-2">
+                        {editId === k.id ? (
+                          <input className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={editName} onChange={e => setEditName(e.target.value)} />
+                        ) : (
+                          k.name
+                        )}
+                      </td>
                       <td className="px-4 py-2 font-mono">{k.code}</td>
+                      <td className="px-4 py-2">
+                        {editId === k.id ? (
+                          <input className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={editLocation} onChange={e => setEditLocation(e.target.value)} placeholder="Waitroom" />
+                        ) : (
+                          k.location || '—'
+                        )}
+                      </td>
                       <td className="px-4 py-2">
                         <span
                           className={
@@ -309,8 +537,19 @@ export default function OrgKiosksPage() {
                         {k.last_heartbeat_at ? new Date(k.last_heartbeat_at).toLocaleString() : '—'}
                       </td>
                       <td className="px-4 py-2 text-right">
-                        {k.status === 'active' && (
+                        {editId === k.id ? (
                           <div className="flex justify-end gap-2">
+                            <Button size="sm" onClick={saveEdit} disabled={isSaving}>Save</Button>
+                            <Button size="sm" variant="outline" onClick={() => setEditId(null)}>Cancel</Button>
+                          </div>
+                        ) : k.status === 'active' && (
+                          <div className="flex justify-end gap-2">
+                            <Button size="sm" variant="outline" onClick={() => viewHistory(k.id)}>
+                              History
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => beginEdit(k)}>
+                              Edit
+                            </Button>
                             {pendingRotateId === k.id ? (
                               <>
                                 <Button size="sm" onClick={() => void rotateSecret(k.id, k.code)} disabled={busyId === k.id}>
