@@ -60,6 +60,13 @@ type Config struct {
 
 	// HRMS Webhooks
 	HRMSWebhookSecret string
+
+	// Email (Brevo)
+	EmailProvider           string
+	BrevoAPIKey             string
+	EmailFrom               string
+	EmailFromName           string
+	ReportSchedulerInterval time.Duration
 }
 
 func Load() *Config {
@@ -104,6 +111,12 @@ func Load() *Config {
 		OfflinePrivateKeyPEM: loadOfflinePrivateKeyPEM(),
 
 		HRMSWebhookSecret: getEnv("HRMS_WEBHOOK_SECRET", ""),
+
+		EmailProvider:           strings.ToLower(getEnv("EMAIL_PROVIDER", "")),
+		BrevoAPIKey:             getEnv("BREVO_API_KEY", ""),
+		EmailFrom:               getEnv("EMAIL_FROM", ""),
+		EmailFromName:           getEnv("EMAIL_FROM_NAME", "Glide ID Reports"),
+		ReportSchedulerInterval: parseDuration(getEnv("REPORT_SCHEDULER_INTERVAL", "60s")),
 	}
 
 	// Validate required config

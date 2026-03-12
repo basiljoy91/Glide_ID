@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -63,6 +64,15 @@ func main() {
 	userService := services.NewUserService(db.Pool)
 	hrmsService := services.NewHRMSService(db.Pool)
 	auditService := services.NewAuditService(db.Pool)
+	reportingService := services.NewReportingService(db.Pool)
+
+	var emailSvc services.EmailService
+	if cfg.EmailProvider == "brevo" && cfg.BrevoAPIKey != "" && cfg.EmailFrom != "" {
+		emailSvc = services.NewBrevoEmailService(cfg.BrevoAPIKey, cfg.EmailFrom, cfg.EmailFromName)
+		log.Println("Email provider configured: Brevo")
+	} else if cfg.EmailProvider != "" {
+		log.Println("Email provider configured but missing required BREVO_API_KEY or EMAIL_FROM")
+	}
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
@@ -92,7 +102,25 @@ func main() {
 		User:       userService,
 		HRMS:       hrmsService,
 		Audit:      auditService,
+		Reporting:  reportingService,
 	}, cfg)
+
+	if emailSvc != nil {
+		scheduler := services.NewReportScheduler(db.Pool, reportingService, emailSvc)
+		interval := cfg.ReportSchedulerInterval
+		if interval < 30*time.Second {
+			interval = 30 * time.Second
+		}
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				scheduler.RunOnce(ctx)
+				cancel()
+			}
+		}()
+	}
 
 	// Graceful shutdown
 	c := make(chan os.Signal, 1)
