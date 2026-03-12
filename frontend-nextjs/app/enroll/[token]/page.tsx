@@ -71,7 +71,7 @@ export default function EnrollPage() {
         throw new Error(friendlyError)
       }
       toast.success('Face enrolled successfully')
-      router.push('/landing')
+      router.push('/')
     } catch (e: any) {
       const message = parseAndMapBiometricError(e?.message, 'Failed to enroll face')
       toast.error(message)
@@ -165,4 +165,3 @@ export default function EnrollPage() {
     </div>
   )
 }
-

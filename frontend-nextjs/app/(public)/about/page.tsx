@@ -1,5 +1,39 @@
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
+import type { Metadata } from 'next'
+
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://glide-id.example'
+
+export const metadata: Metadata = {
+  title: 'About Glide ID | Security-First Attendance Platform',
+  description:
+    'Learn about Glide ID’s mission, leadership, and the security-first architecture behind our biometric attendance platform.',
+  keywords: [
+    'Glide ID',
+    'biometric attendance',
+    'security-first SaaS',
+    'row-level security',
+    'compliance automation',
+  ],
+  metadataBase: new URL(siteUrl),
+  alternates: { canonical: '/about' },
+  openGraph: {
+    title: 'About Glide ID',
+    description:
+      'Learn about Glide ID’s mission, leadership, and the security-first architecture behind our biometric attendance platform.',
+    url: '/about',
+    siteName: 'Glide ID',
+    images: [{ url: '/hero-visual.svg', width: 1200, height: 630, alt: 'Glide ID mission' }],
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'About Glide ID',
+    description:
+      'Learn about Glide ID’s mission, leadership, and the security-first architecture behind our biometric attendance platform.',
+    images: ['/hero-visual.svg'],
+  },
+}
 
 export default function AboutPage() {
   return (

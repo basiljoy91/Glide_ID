@@ -209,8 +209,8 @@ export default function KioskStartPage() {
         </div>
 
         <div className="text-center">
-          <Link href="/landing">
-            <Button variant="link">Back to landing</Button>
+          <Link href="/">
+            <Button variant="link">Back to home</Button>
           </Link>
         </div>
       </div>
