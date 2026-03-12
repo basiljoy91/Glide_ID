@@ -20,6 +20,8 @@ interface UserRow {
   designation?: string | null
   department_id?: string | null
   date_of_joining?: string
+  last_login_at?: string | null
+  last_check_in_at?: string | null
 }
 
 interface Department {
@@ -58,8 +60,32 @@ export default function OrgUsersPage() {
   const [selectedRows, setSelectedRows] = useState<Record<string, boolean>>({})
   const [bulkRunning, setBulkRunning] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [page, setPage] = useState(1)
+  const [limit, setLimit] = useState(25)
+  const [total, setTotal] = useState(0)
+  const [sortBy, setSortBy] = useState<'employee_id' | 'name' | 'email' | 'role' | 'status' | 'last_login' | 'last_check_in' | 'created_at'>('created_at')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
 
   const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+
+  const formatDate = (value?: string | null) => {
+    if (!value) return '—'
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return '—'
+    return d.toLocaleString()
+  }
+
+  const initialsFor = (u: UserRow) => {
+    const first = u.first_name?.[0] || ''
+    const last = u.last_name?.[0] || ''
+    return `${first}${last}`.toUpperCase()
+  }
+
+  const sortLabel = (col: typeof sortBy) => {
+    if (sortBy !== col) return ''
+    return sortDir === 'asc' ? '↑' : '↓'
+  }
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -76,6 +102,19 @@ export default function OrgUsersPage() {
   }, [isAuthenticated, user?.role])
 
   useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQuery(query.trim())
+      setPage(1)
+    }, 250)
+    return () => clearTimeout(t)
+  }, [query])
+
+  useEffect(() => {
+    void fetchUsers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, limit, roleFilter, statusFilter, debouncedQuery, sortBy, sortDir])
+
+  useEffect(() => {
     if (role === 'employee') {
       setAuthMethod('sso')
       setPassword('')
@@ -85,7 +124,16 @@ export default function OrgUsersPage() {
   const fetchUsers = async () => {
     try {
       setIsLoading(true)
-      const resp = await fetch(`${base}/api/v1/users?limit=300`, {
+      const params = new URLSearchParams()
+      params.set('limit', String(limit))
+      params.set('page', String(page))
+      if (debouncedQuery) params.set('q', debouncedQuery)
+      if (roleFilter !== 'all') params.set('role', roleFilter)
+      if (statusFilter !== 'all') params.set('status', statusFilter)
+      params.set('sort_by', sortBy)
+      params.set('sort_dir', sortDir)
+
+      const resp = await fetch(`${base}/api/v1/users?${params.toString()}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
       if (!resp.ok) {
@@ -93,7 +141,13 @@ export default function OrgUsersPage() {
         throw new Error(err.error || 'Failed to load users')
       }
       const data = await resp.json()
-      setUsers(Array.isArray(data) ? data : [])
+      if (Array.isArray(data)) {
+        setUsers(data)
+        setTotal(data.length)
+      } else {
+        setUsers(Array.isArray(data.data) ? data.data : [])
+        setTotal(data?.meta?.total || 0)
+      }
       setSelectedRows({})
     } catch (e: any) {
       toast.error(e.message || 'Failed to load users')
@@ -112,6 +166,67 @@ export default function OrgUsersPage() {
       setDepartments(Array.isArray(data) ? data : [])
     } catch {
       // best effort
+    }
+  }
+
+  const toggleSort = (next: typeof sortBy) => {
+    if (sortBy === next) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+      return
+    }
+    setSortBy(next)
+    setSortDir('asc')
+  }
+
+  const exportCsv = async () => {
+    try {
+      const params = new URLSearchParams()
+      if (debouncedQuery) params.set('q', debouncedQuery)
+      if (roleFilter !== 'all') params.set('role', roleFilter)
+      if (statusFilter !== 'all') params.set('status', statusFilter)
+      params.set('sort_by', sortBy)
+      params.set('sort_dir', sortDir)
+
+      const resp = await fetch(`${base}/api/v1/users/export?${params.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Export failed')
+      }
+      const blob = await resp.blob()
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `users-${new Date().toISOString().slice(0, 10)}.csv`
+      link.click()
+      window.URL.revokeObjectURL(url)
+    } catch (e: any) {
+      toast.error(e.message || 'Export failed')
+    }
+  }
+
+  const resetPassword = async (u: UserRow) => {
+    if (!window.confirm(`Reset password for ${u.first_name} ${u.last_name}?`)) return
+    try {
+      const resp = await fetch(`${base}/api/v1/users/${u.id}/reset-password`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Password reset failed')
+      }
+      const data = await resp.json()
+      const temp = data.temporary_password as string
+      if (temp) {
+        await navigator.clipboard.writeText(temp)
+        window.alert(`Temporary password (copied to clipboard): ${temp}`)
+      } else {
+        window.alert('Temporary password generated.')
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Password reset failed')
     }
   }
 
@@ -175,21 +290,7 @@ export default function OrgUsersPage() {
     }
   }
 
-  const filteredUsers = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return users.filter((u) => {
-      if (roleFilter !== 'all' && u.role !== roleFilter) return false
-      if (statusFilter === 'active' && !u.is_active) return false
-      if (statusFilter === 'inactive' && u.is_active) return false
-      if (!q) return true
-      const name = `${u.first_name} ${u.last_name}`.toLowerCase()
-      return (
-        name.includes(q) ||
-        u.employee_id.toLowerCase().includes(q) ||
-        u.email.toLowerCase().includes(q)
-      )
-    })
-  }, [users, query, roleFilter, statusFilter])
+  const visibleUsers = useMemo(() => users, [users])
 
   const beginEdit = (u: UserRow) => {
     setEditingId(u.id)
@@ -310,7 +411,7 @@ export default function OrgUsersPage() {
       return
     }
     const next: Record<string, boolean> = {}
-    filteredUsers.forEach((u) => {
+    visibleUsers.forEach((u) => {
       next[u.id] = true
     })
     setSelectedRows(next)
@@ -320,6 +421,10 @@ export default function OrgUsersPage() {
     if (!selectedUserIds.length) {
       toast.error('Select at least one employee')
       return
+    }
+    if (action === 'delete') {
+      const ok = window.confirm(`Delete ${selectedUserIds.length} selected users? This cannot be undone.`)
+      if (!ok) return
     }
     try {
       setBulkRunning(true)
@@ -540,7 +645,10 @@ export default function OrgUsersPage() {
             />
             <select
               value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value as 'all' | Role)}
+              onChange={(e) => {
+                setRoleFilter(e.target.value as 'all' | Role)
+                setPage(1)
+              }}
               className="h-10 rounded-md border border-input bg-background px-3 text-sm"
             >
               <option value="all">All roles</option>
@@ -552,7 +660,10 @@ export default function OrgUsersPage() {
             </select>
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as 'all' | 'active' | 'inactive')}
+              onChange={(e) => {
+                setStatusFilter(e.target.value as 'all' | 'active' | 'inactive')
+                setPage(1)
+              }}
               className="h-10 rounded-md border border-input bg-background px-3 text-sm"
             >
               <option value="all">All status</option>
@@ -573,6 +684,9 @@ export default function OrgUsersPage() {
                 }}
               />
             </label>
+            <Button variant="outline" size="sm" onClick={exportCsv}>
+              Export CSV
+            </Button>
           </div>
         </div>
 
@@ -599,12 +713,12 @@ export default function OrgUsersPage() {
               <div key={i} className="skeleton h-16 w-full" />
             ))}
           </div>
-        ) : filteredUsers.length === 0 ? (
+        ) : visibleUsers.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">No employees found.</div>
         ) : (
           <>
             <div className="md:hidden divide-y">
-              {filteredUsers.map((u) => {
+              {visibleUsers.map((u) => {
                 const isEditing = editingId === u.id
                 return (
                   <div key={u.id} className="p-4 space-y-3">
@@ -637,6 +751,8 @@ export default function OrgUsersPage() {
                       {u.department_id ? departments.find((d) => d.id === u.department_id)?.name || '—' : '—'}
                     </div>
                     <div className="text-xs text-muted-foreground">Role: {u.role}</div>
+                    <div className="text-xs text-muted-foreground">Last login: {formatDate(u.last_login_at)}</div>
+                    <div className="text-xs text-muted-foreground">Last check-in: {formatDate(u.last_check_in_at)}</div>
                     {isEditing && (
                       <div className="space-y-2">
                         <Input
@@ -711,6 +827,9 @@ export default function OrgUsersPage() {
                           <Button size="sm" variant="ghost" onClick={() => void copyEnrollLink(u.id)}>
                             Copy enroll link
                           </Button>
+                          <Button size="sm" variant="ghost" onClick={() => void resetPassword(u)}>
+                            Reset password
+                          </Button>
                         </>
                       )}
                     </div>
@@ -727,23 +846,53 @@ export default function OrgUsersPage() {
                       <input
                         type="checkbox"
                         checked={
-                          filteredUsers.length > 0 &&
-                          filteredUsers.every((u) => Boolean(selectedRows[u.id]))
+                          visibleUsers.length > 0 &&
+                          visibleUsers.every((u) => Boolean(selectedRows[u.id]))
                         }
                         onChange={(e) => toggleSelectAllVisible(e.target.checked)}
                       />
                     </th>
-                    <th className="px-4 py-2">Employee ID</th>
-                    <th className="px-4 py-2">Name</th>
-                    <th className="px-4 py-2">Email</th>
+                    <th className="px-4 py-2">
+                      <button className="text-left" onClick={() => toggleSort('employee_id')}>
+                        Employee ID {sortLabel('employee_id')}
+                      </button>
+                    </th>
+                    <th className="px-4 py-2">
+                      <button className="text-left" onClick={() => toggleSort('name')}>
+                        Name {sortLabel('name')}
+                      </button>
+                    </th>
+                    <th className="px-4 py-2">
+                      <button className="text-left" onClick={() => toggleSort('email')}>
+                        Email {sortLabel('email')}
+                      </button>
+                    </th>
                     <th className="px-4 py-2">Department</th>
-                    <th className="px-4 py-2">Role</th>
-                    <th className="px-4 py-2">Status</th>
+                    <th className="px-4 py-2">
+                      <button className="text-left" onClick={() => toggleSort('role')}>
+                        Role {sortLabel('role')}
+                      </button>
+                    </th>
+                    <th className="px-4 py-2">
+                      <button className="text-left" onClick={() => toggleSort('status')}>
+                        Status {sortLabel('status')}
+                      </button>
+                    </th>
+                    <th className="px-4 py-2">
+                      <button className="text-left" onClick={() => toggleSort('last_login')}>
+                        Last login {sortLabel('last_login')}
+                      </button>
+                    </th>
+                    <th className="px-4 py-2">
+                      <button className="text-left" onClick={() => toggleSort('last_check_in')}>
+                        Last check-in {sortLabel('last_check_in')}
+                      </button>
+                    </th>
                     <th className="px-4 py-2 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredUsers.map((u) => {
+                  {visibleUsers.map((u) => {
                     const isEditing = editingId === u.id
                     return (
                       <tr key={u.id} className="border-b last:border-b-0 align-top">
@@ -776,7 +925,15 @@ export default function OrgUsersPage() {
                               />
                             </div>
                           ) : (
-                            `${u.first_name} ${u.last_name}`
+                            <div className="flex items-center gap-3">
+                              <div className="h-9 w-9 rounded-full bg-muted text-foreground flex items-center justify-center text-xs font-semibold">
+                                {initialsFor(u)}
+                              </div>
+                              <div>
+                                <div className="font-medium">{u.first_name} {u.last_name}</div>
+                                <div className="text-xs text-muted-foreground">{u.designation || '—'}</div>
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td className="px-4 py-2">
@@ -844,6 +1001,12 @@ export default function OrgUsersPage() {
                             {u.is_active ? 'Active' : 'Inactive'}
                           </span>
                         </td>
+                        <td className="px-4 py-2 text-xs text-muted-foreground">
+                          {formatDate(u.last_login_at)}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-muted-foreground">
+                          {formatDate(u.last_check_in_at)}
+                        </td>
                         <td className="px-4 py-2">
                           <div className="flex justify-end flex-wrap gap-2">
                             {isEditing ? (
@@ -874,6 +1037,13 @@ export default function OrgUsersPage() {
                                 >
                                   Copy enroll link
                                 </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => void resetPassword(u)}
+                                >
+                                  Reset password
+                                </Button>
                               </>
                             )}
                           </div>
@@ -883,6 +1053,44 @@ export default function OrgUsersPage() {
                   })}
                 </tbody>
               </table>
+            </div>
+
+            <div className="border-t px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div className="text-xs text-muted-foreground">
+                Page {page} of {Math.max(1, Math.ceil(total / limit))} · Total {total}
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={limit}
+                  onChange={(e) => {
+                    setLimit(Number(e.target.value))
+                    setPage(1)
+                  }}
+                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  {[10, 25, 50, 100].map((v) => (
+                    <option key={v} value={v}>
+                      {v} / page
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page >= Math.max(1, Math.ceil(total / limit))}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
             </div>
           </>
         )}

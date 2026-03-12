@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"strings"
@@ -165,21 +167,50 @@ func GetUser(userSvc *services.UserService) fiber.Handler {
 	}
 }
 
+type listUsersResponse struct {
+	Data []*models.User `json:"data"`
+	Meta struct {
+		Total int `json:"total"`
+		Page  int `json:"page"`
+		Limit int `json:"limit"`
+	} `json:"meta"`
+}
+
 // ListUsers lists all users
 func ListUsers(userSvc *services.UserService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		limit := c.QueryInt("limit", 50)
-		offset := c.QueryInt("offset", 0)
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 200 {
+			limit = 200
+		}
+		page := c.QueryInt("page", 1)
+		if page <= 0 {
+			page = 1
+		}
+		offset := (page - 1) * limit
+		query := c.Query("q", "")
+		role := c.Query("role", "")
+		status := c.Query("status", "")
+		sortBy := c.Query("sort_by", "created_at")
+		sortDir := c.Query("sort_dir", "desc")
 
-		users, err := userSvc.ListUsers(c.Context(), tenantID, limit, offset)
+		users, total, err := userSvc.ListUsers(c.Context(), tenantID, limit, offset, query, role, status, sortBy, sortDir)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": err.Error(),
 			})
 		}
 
-		return c.JSON(users)
+		var resp listUsersResponse
+		resp.Data = users
+		resp.Meta.Total = total
+		resp.Meta.Page = page
+		resp.Meta.Limit = limit
+		return c.JSON(resp)
 	}
 }
 
@@ -257,6 +288,146 @@ func DeleteUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 
 		return c.JSON(fiber.Map{"message": "User deleted"})
 	}
+}
+
+// ExportUsersCSV exports users with filters to CSV.
+func ExportUsersCSV(userSvc *services.UserService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		query := c.Query("q", "")
+		role := c.Query("role", "")
+		status := c.Query("status", "")
+		sortBy := c.Query("sort_by", "created_at")
+		sortDir := c.Query("sort_dir", "desc")
+
+		users, _, err := userSvc.ListUsers(c.Context(), tenantID, 5000, 0, query, role, status, sortBy, sortDir)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+
+		c.Set("Content-Type", "text/csv")
+		c.Set("Content-Disposition", "attachment; filename=users.csv")
+		writer := csv.NewWriter(c.Response().BodyWriter())
+		_ = writer.Write([]string{
+			"employee_id",
+			"first_name",
+			"last_name",
+			"email",
+			"role",
+			"status",
+			"department_id",
+			"designation",
+			"phone",
+			"last_login_at",
+			"last_check_in_at",
+		})
+		for _, u := range users {
+			statusVal := "inactive"
+			if u.IsActive {
+				statusVal = "active"
+			}
+			lastLogin := ""
+			if u.LastLoginAt != nil {
+				lastLogin = u.LastLoginAt.Format(time.RFC3339)
+			}
+			lastCheckIn := ""
+			if u.LastCheckInAt != nil {
+				lastCheckIn = u.LastCheckInAt.Format(time.RFC3339)
+			}
+			dept := ""
+			if u.DepartmentID != nil {
+				dept = u.DepartmentID.String()
+			}
+			_ = writer.Write([]string{
+				u.EmployeeID,
+				u.FirstName,
+				u.LastName,
+				u.Email,
+				u.Role,
+				statusVal,
+				dept,
+				stringOrEmpty(u.Designation),
+				stringOrEmpty(u.Phone),
+				lastLogin,
+				lastCheckIn,
+			})
+		}
+		writer.Flush()
+		return nil
+	}
+}
+
+// ResetUserPassword generates a temporary password for a user.
+func ResetUserPassword(userSvc *services.UserService, auditSvc *services.AuditService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		targetUserID := c.Params("id")
+
+		tempPassword, err := generateTempPassword(12)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to generate temporary password",
+			})
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(tempPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to hash password",
+			})
+		}
+
+		if err := userSvc.SetUserPasswordHash(c.Context(), tenantID, targetUserID, string(hash)); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+
+		tenantUUID := uuid.MustParse(tenantID)
+		actorUUID := uuid.MustParse(actorUserID)
+		targetUUID := uuid.MustParse(targetUserID)
+		if err := auditSvc.LogAction(c.Context(), &models.AuditLog{
+			TenantID:     &tenantUUID,
+			UserID:       &actorUUID,
+			TargetUserID: &targetUUID,
+			Action:       "user_password_reset",
+			ResourceType: stringPtr("user"),
+			ResourceID:   &targetUUID,
+			IPAddress:    stringPtr(c.IP()),
+			UserAgent:    stringPtr(c.Get("User-Agent")),
+		}); err != nil {
+			log.Printf("audit log failed for user_password_reset: tenant=%s target=%s err=%v", tenantID, targetUserID, err)
+		}
+
+		return c.JSON(fiber.Map{
+			"temporary_password": tempPassword,
+		})
+	}
+}
+
+func generateTempPassword(length int) (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$"
+	if length <= 0 {
+		length = 12
+	}
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	out := make([]byte, length)
+	for i := range b {
+		out[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(out), nil
+}
+
+func stringOrEmpty(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 func stringPtr(s string) *string {

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"enterprise-attendance-api/internal/models"
@@ -69,20 +70,61 @@ func (s *UserService) GetUser(ctx context.Context, tenantID, userID string) (*mo
 }
 
 // ListUsers lists all users for a tenant
-func (s *UserService) ListUsers(ctx context.Context, tenantID string, limit, offset int) ([]*models.User, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
-			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
-			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, created_at, updated_at, deleted_at
-		FROM users
-		WHERE tenant_id = $1 AND deleted_at IS NULL
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3
-	`, tenantID, limit, offset)
+func (s *UserService) ListUsers(
+	ctx context.Context,
+	tenantID string,
+	limit, offset int,
+	query, role, status, sortBy, sortDir string,
+) ([]*models.User, int, error) {
+	where := []string{"u.tenant_id = $1", "u.deleted_at IS NULL"}
+	args := []interface{}{tenantID}
+
+	if strings.TrimSpace(query) != "" {
+		args = append(args, "%"+strings.ToLower(strings.TrimSpace(query))+"%")
+		where = append(where, fmt.Sprintf("(LOWER(u.first_name || ' ' || u.last_name) LIKE $%d OR LOWER(u.email) LIKE $%d OR LOWER(u.employee_id) LIKE $%d)", len(args), len(args), len(args)))
+	}
+	if role != "" && role != "all" {
+		args = append(args, role)
+		where = append(where, fmt.Sprintf("u.role = $%d", len(args)))
+	}
+	if status == "active" {
+		where = append(where, "u.is_active = true")
+	} else if status == "inactive" {
+		where = append(where, "u.is_active = false")
+	}
+
+	sortSQL := buildUserSort(sortBy, sortDir)
+	whereClause := "WHERE " + strings.Join(where, " AND ")
+
+	var total int
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM users u %s`, whereClause)
+	if err := s.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	listQuery := fmt.Sprintf(`
+		SELECT u.id, u.tenant_id, u.employee_id, u.email, u.phone, u.first_name, u.last_name,
+			u.department_id, u.designation, u.date_of_joining, u.shift_start_time, u.shift_end_time,
+			u.shift_length_hours, u.role, u.is_active, u.data_privacy_consent, u.consent_date,
+			u.last_login_at, u.created_at, u.updated_at, u.deleted_at,
+			al.last_check_in_at
+		FROM users u
+		LEFT JOIN (
+			SELECT user_id, MAX(punch_time) AS last_check_in_at
+			FROM attendance_logs
+			WHERE tenant_id = $1
+			GROUP BY user_id
+		) al ON al.user_id = u.id
+		%s
+		%s
+		LIMIT $%d OFFSET $%d
+	`, whereClause, sortSQL, len(args)+1, len(args)+2)
+
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(ctx, listQuery, args...)
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -94,13 +136,42 @@ func (s *UserService) ListUsers(ctx context.Context, tenantID string, limit, off
 			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt); err != nil {
-			return nil, err
+			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+			&user.LastCheckInAt); err != nil {
+			return nil, 0, err
 		}
 		users = append(users, user)
 	}
 
-	return users, nil
+	return users, total, nil
+}
+
+func buildUserSort(sortBy, sortDir string) string {
+	dir := "DESC"
+	if strings.EqualFold(sortDir, "asc") {
+		dir = "ASC"
+	}
+
+	switch sortBy {
+	case "employee_id":
+		return fmt.Sprintf("ORDER BY u.employee_id %s", dir)
+	case "name":
+		return fmt.Sprintf("ORDER BY LOWER(u.first_name) %s, LOWER(u.last_name) %s", dir, dir)
+	case "email":
+		return fmt.Sprintf("ORDER BY u.email %s", dir)
+	case "role":
+		return fmt.Sprintf("ORDER BY u.role %s", dir)
+	case "status":
+		return fmt.Sprintf("ORDER BY u.is_active %s", dir)
+	case "last_login":
+		return fmt.Sprintf("ORDER BY u.last_login_at %s NULLS LAST", dir)
+	case "last_check_in":
+		return fmt.Sprintf("ORDER BY al.last_check_in_at %s NULLS LAST", dir)
+	case "created_at":
+		return fmt.Sprintf("ORDER BY u.created_at %s", dir)
+	default:
+		return "ORDER BY u.created_at DESC"
+	}
 }
 
 // GetUserByEmail retrieves a user by email (searches across tenants for login)
@@ -195,6 +266,19 @@ func (s *UserService) SoftDeleteUser(ctx context.Context, tenantID, userID strin
 	`, userID, tenantID)
 	if err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
+	}
+	return nil
+}
+
+// SetUserPasswordHash updates a user's password hash.
+func (s *UserService) SetUserPasswordHash(ctx context.Context, tenantID, userID, passwordHash string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE users
+		SET password_hash = $1, updated_at = NOW()
+		WHERE id = $2 AND tenant_id = $3 AND deleted_at IS NULL
+	`, passwordHash, userID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to reset user password: %w", err)
 	}
 	return nil
 }

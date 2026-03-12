@@ -72,10 +72,12 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		users.Use(middleware.RequireRole("org_admin", "hr"))
 		{
 			users.Get("/", handlers.ListUsers(svc.User))
+			users.Get("/export", handlers.ExportUsersCSV(svc.User))
 			users.Get("/:id", handlers.GetUser(svc.User))
 			users.Post("/", handlers.CreateUser(svc.User, svc.Audit))
 			users.Post("/bulk/import", handlers.BulkImportUsers(svc.User, svc.Audit))
 			users.Post("/bulk/action", handlers.BulkUserAction(svc.User, svc.Audit))
+			users.Post("/:id/reset-password", handlers.ResetUserPassword(svc.User, svc.Audit))
 			users.Put("/:id", handlers.UpdateUser(svc.User, svc.Audit))
 			users.Delete("/:id", handlers.DeleteUser(svc.User, svc.Audit))
 			users.Post("/:id/enroll-link", handlers.GenerateEnrollToken(svc.Auth))
@@ -127,6 +129,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		reports.Use(middleware.RequireRole("org_admin", "hr", "dept_manager"))
 		{
 			reports.Get("/org-metrics", handlers.GetOrgMetrics(svc.Attendance.GetDB()))
+			reports.Get("/org-metrics/export", handlers.ExportOrgMetrics(svc.Attendance.GetDB()))
 			reports.Get("/checkins-7d", handlers.GetCheckins7d(svc.Attendance.GetDB()))
 			reports.Get("/anomalies", handlers.ListAnomalies(svc.Attendance.GetDB()))
 			reports.Get("/anomalies/:id", handlers.GetAnomaly(svc.Attendance.GetDB()))

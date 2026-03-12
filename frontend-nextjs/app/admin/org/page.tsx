@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuthStore } from '@/store/useStore'
 import { useRouter } from 'next/navigation'
 import { DataCard, DataCardGrid } from '@/components/data/DataCard'
@@ -21,6 +21,11 @@ interface OrgMetrics {
   healthyKiosks: number
   offlineKiosks: number
   totalAttendanceLogs: number
+  rangeCheckIns: number
+  rangeAnomalies: number
+  rangeAttendanceLogs: number
+  rangeStart?: string
+  rangeEnd?: string
 }
 
 export default function OrgAdminDashboardPage() {
@@ -30,6 +35,11 @@ export default function OrgAdminDashboardPage() {
   const [chart7d, setChart7d] = useState<ChartPoint7d[]>([])
   const [recentAnomalies, setRecentAnomalies] = useState<AnomalyPreviewRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [rangeStart, setRangeStart] = useState(
+    new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10)
+  )
+  const [rangeEnd, setRangeEnd] = useState(new Date().toISOString().slice(0, 10))
+  const [autoRefresh, setAutoRefresh] = useState(true)
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -44,6 +54,20 @@ export default function OrgAdminDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, user?.role])
 
+  useEffect(() => {
+    if (!autoRefresh) return
+    const interval = setInterval(() => {
+      fetchAll()
+    }, 60000)
+    return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh, rangeStart, rangeEnd])
+
+  useEffect(() => {
+    fetchAll()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rangeStart, rangeEnd])
+
   const fetchAll = async () => {
     try {
       setIsLoading(true)
@@ -51,9 +75,13 @@ export default function OrgAdminDashboardPage() {
       const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
+      const params = new URLSearchParams()
+      if (rangeStart) params.set('start', rangeStart)
+      if (rangeEnd) params.set('end', rangeEnd)
+      const metricsUrl = `${base}/api/v1/reports/org-metrics?${params.toString()}`
 
       const [mResp, cResp, aResp] = await Promise.all([
-        fetch(`${base}/api/v1/reports/org-metrics`, { headers }),
+        fetch(metricsUrl, { headers }),
         fetch(`${base}/api/v1/reports/checkins-7d`, { headers }),
         fetch(`${base}/api/v1/reports/anomalies?limit=5`, { headers }),
       ])
@@ -85,6 +113,9 @@ export default function OrgAdminDashboardPage() {
         healthyKiosks: 0,
         offlineKiosks: 0,
         totalAttendanceLogs: 0,
+        rangeCheckIns: 0,
+        rangeAnomalies: 0,
+        rangeAttendanceLogs: 0,
       })
       setChart7d([])
       setRecentAnomalies([])
@@ -95,6 +126,36 @@ export default function OrgAdminDashboardPage() {
 
   if (!isAuthenticated || !user) return null
 
+  const rangeLabel = useMemo(() => {
+    if (!metrics?.rangeStart || !metrics?.rangeEnd) return 'Selected range'
+    return `${metrics.rangeStart} → ${metrics.rangeEnd}`
+  }, [metrics?.rangeStart, metrics?.rangeEnd])
+
+  const exportMetrics = async () => {
+    try {
+      const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+      const params = new URLSearchParams()
+      if (rangeStart) params.set('start', rangeStart)
+      if (rangeEnd) params.set('end', rangeEnd)
+      const resp = await fetch(`${base}/api/v1/reports/org-metrics/export?${params.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Export failed')
+      }
+      const blob = await resp.blob()
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `org-metrics-${rangeStart}-${rangeEnd}.csv`
+      link.click()
+      window.URL.revokeObjectURL(url)
+    } catch (e: any) {
+      toast.error(e.message || 'Export failed')
+    }
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div>
@@ -104,6 +165,41 @@ export default function OrgAdminDashboardPage() {
         </p>
       </div>
 
+      <div className="border rounded-lg bg-card p-4 flex flex-col lg:flex-row lg:items-center gap-3 lg:justify-between">
+        <div className="flex flex-wrap gap-3 items-center">
+          <div className="text-sm font-medium text-muted-foreground">Date range</div>
+          <input
+            type="date"
+            value={rangeStart}
+            onChange={(e) => setRangeStart(e.target.value)}
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+          />
+          <span className="text-sm text-muted-foreground">to</span>
+          <input
+            type="date"
+            value={rangeEnd}
+            onChange={(e) => setRangeEnd(e.target.value)}
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+          />
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+            />
+            Auto-refresh (60s)
+          </label>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={fetchAll}>
+            Refresh
+          </Button>
+          <Button variant="outline" size="sm" onClick={exportMetrics}>
+            Export CSV
+          </Button>
+        </div>
+      </div>
+
       <DataCardGrid>
         <DataCard
           title="Total Employees"
@@ -111,14 +207,14 @@ export default function OrgAdminDashboardPage() {
           subtitle="Active employees in this tenant"
         />
         <DataCard
-          title="Today's Check-Ins"
-          value={isLoading || !metrics ? '—' : metrics.todayCheckIns.toLocaleString()}
-          subtitle="All check-ins recorded today"
+          title="Check-Ins (range)"
+          value={isLoading || !metrics ? '—' : metrics.rangeCheckIns.toLocaleString()}
+          subtitle={rangeLabel}
         />
         <DataCard
-          title="Pending Reviews"
-          value={isLoading || !metrics ? '—' : metrics.anomaliesPending.toLocaleString()}
-          subtitle="Anomalies flagged for HR review"
+          title="Anomalies (range)"
+          value={isLoading || !metrics ? '—' : metrics.rangeAnomalies.toLocaleString()}
+          subtitle="Flagged check-ins in range"
         />
         <DataCard
           title="Active Kiosks"
@@ -130,9 +226,9 @@ export default function OrgAdminDashboardPage() {
           }
         />
         <DataCard
-          title="Total Attendance Logs"
-          value={isLoading || !metrics ? '—' : metrics.totalAttendanceLogs.toLocaleString()}
-          subtitle="Historical logs captured for this tenant"
+          title="Attendance Logs (range)"
+          value={isLoading || !metrics ? '—' : metrics.rangeAttendanceLogs.toLocaleString()}
+          subtitle={rangeLabel}
         />
       </DataCardGrid>
 
