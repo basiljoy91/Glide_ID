@@ -147,7 +147,11 @@ export default function AboutPage() {
             { name: 'Platform Ops', role: 'SRE & Compliance', img: '/team/avatar-neutral.svg' },*/
           ].map((member) => (
             <div key={member.name} className="rounded-2xl border bg-background/80 p-4">
-              <img src={member.img} alt={member.name} className="w-full rounded-xl border" />
+              <img
+                src={member.img}
+                alt={member.name}
+                className="w-full rounded-2xl border bg-white shadow-sm"
+              />
               <div className="mt-4 font-semibold">{member.name}</div>
               <div className="text-sm text-muted-foreground">{member.role}</div>
             </div>

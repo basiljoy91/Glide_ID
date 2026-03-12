@@ -135,6 +135,11 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			reports.Get("/attendance", handlers.GetAttendanceReport(svc.Attendance.GetDB()))
 			reports.Post("/export", handlers.ExportReport(svc.Attendance))
 		}
+		// Employee Dashboard
+		employee := api.Group("/employee")
+		{
+			employee.Get("/dashboard", handlers.GetEmployeeDashboard(svc.Attendance.GetDB()))
+		}
 	}
 
 	// HRMS Webhook endpoints (public, signature verified)

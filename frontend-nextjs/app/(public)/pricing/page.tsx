@@ -12,7 +12,7 @@ const CURRENCIES: Record<Currency, { symbol: string; rate: number }> = {
   USD: { symbol: '$', rate: 1 },
   EUR: { symbol: '€', rate: 0.92 },
   GBP: { symbol: '£', rate: 0.79 },
-  INR: { symbol: '₹', rate: 92 },
+  INR: { symbol: '₹', rate: 25 },
 }
 
 const PLANS = [
