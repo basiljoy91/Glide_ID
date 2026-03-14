@@ -7,7 +7,7 @@
 -- 1. Automatically create users in custom users table when Supabase auth users sign up
 -- 2. Sync user metadata between Supabase auth and custom users table
 -- 3. Handle user updates and deletions
--- ===========================================================================
+-- ============================================================================
 
 -- ============================================================================
 -- FUNCTION: Get user metadata from Supabase auth
