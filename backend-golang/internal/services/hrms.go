@@ -161,6 +161,40 @@ func (s *HRMSService) UpsertIntegration(ctx context.Context, tenantID string, in
 
 // ProcessWebhook processes an incoming HRMS webhook
 func (s *HRMSService) ProcessWebhook(ctx context.Context, tenantID, provider string, payload map[string]interface{}, signature string) error {
+	integrationID, err := s.lookupIntegrationID(ctx, tenantID, provider)
+	if err != nil {
+		return err
+	}
+
+	eventID := uuid.New()
+	_, _ = s.db.Exec(ctx, `
+		INSERT INTO hrms_webhook_events (id, tenant_id, integration_id, provider, payload, signature, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 'received')
+	`, eventID, tenantID, integrationID, provider, payload, signature)
+
+	err = s.processWebhookCore(ctx, tenantID, provider, payload, signature)
+	if err != nil {
+		nextRetry := time.Now().UTC().Add(15 * time.Minute)
+		_, _ = s.db.Exec(ctx, `
+			UPDATE hrms_webhook_events
+			SET status = 'failed', retry_count = retry_count + 1, error_message = $1, next_retry_at = $2, updated_at = NOW()
+			WHERE id = $3
+		`, err.Error(), nextRetry, eventID)
+		actionURL := "/admin/org/integrations"
+		_ = InsertNotification(ctx, s.db, tenantID, nil, "integration.webhook_failed", "Webhook processing failed", fmt.Sprintf("%s webhook failed for integration %s", provider, integrationID), "warning", &actionURL)
+		return err
+	}
+
+	now := time.Now().UTC()
+	_, _ = s.db.Exec(ctx, `
+		UPDATE hrms_webhook_events
+		SET status = 'processed', processed_at = $1, error_message = NULL, next_retry_at = NULL, updated_at = NOW()
+		WHERE id = $2
+	`, now, eventID)
+	return nil
+}
+
+func (s *HRMSService) lookupIntegrationID(ctx context.Context, tenantID, provider string) (uuid.UUID, error) {
 	// Verify webhook signature
 	integration := &models.HRMSIntegration{}
 	err := s.db.QueryRow(ctx, `
@@ -170,9 +204,22 @@ func (s *HRMSService) ProcessWebhook(ctx context.Context, tenantID, provider str
 	`, tenantID, provider).Scan(&integration.ID, &integration.APISecret)
 
 	if err != nil {
+		return uuid.Nil, fmt.Errorf("HRMS integration not found: %w", err)
+	}
+	return integration.ID, nil
+}
+
+func (s *HRMSService) processWebhookCore(ctx context.Context, tenantID, provider string, payload map[string]interface{}, signature string) error {
+	// Verify webhook signature
+	integration := &models.HRMSIntegration{}
+	err := s.db.QueryRow(ctx, `
+		SELECT id, api_secret
+		FROM hrms_integrations
+		WHERE tenant_id = $1 AND provider = $2 AND is_active = true
+	`, tenantID, provider).Scan(&integration.ID, &integration.APISecret)
+	if err != nil {
 		return fmt.Errorf("HRMS integration not found: %w", err)
 	}
-
 	// Verify HMAC signature if secret exists
 	if integration.APISecret != nil && *integration.APISecret != "" {
 		if !s.verifyWebhookSignature(payload, signature, *integration.APISecret) {

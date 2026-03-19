@@ -149,6 +149,13 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			hrms.Delete("/integrations/:id/schedule", handlers.DeleteHRMSSyncSchedule(svc.HRMS))
 			hrms.Get("/integrations/:id/sync-logs", handlers.ListHRMSSyncLogs(svc.HRMS))
 			hrms.Post("/integrations/:id/sync", handlers.RunHRMSSync(svc.HRMS))
+			hrms.Get("/integrations/:id/webhook-events", handlers.ListHRMSWebhookEvents(svc.HRMS))
+			hrms.Post("/integrations/:id/webhook-events/:eventId/retry", handlers.RetryHRMSWebhookEvent(svc.HRMS))
+			hrms.Post("/integrations/:id/mapping-test", handlers.TestHRMSFieldMapping(svc.HRMS))
+			hrms.Post("/integrations/:id/dry-run", handlers.DryRunHRMSDirectorySync(svc.HRMS))
+			hrms.Get("/integrations/:id/conflicts", handlers.ListHRMSSyncConflicts(svc.HRMS))
+			hrms.Patch("/integrations/:id/conflicts/:conflictId", handlers.ResolveHRMSSyncConflict(svc.HRMS))
+			hrms.Post("/integrations/:id/rotate-credentials", handlers.RotateHRMSCredentials(svc.HRMS))
 			hrms.Post("/webhooks/:provider", handlers.ProcessHRMSWebhook(svc.HRMS))
 			hrms.Post("/export/timesheet", handlers.ExportTimesheet(svc.HRMS))
 		}
@@ -248,6 +255,27 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			sessions.Get("/", handlers.ListActiveSessions(svc.Admin))
 			sessions.Post("/:id/revoke", handlers.RevokeSession(svc.Admin, svc.Audit))
 			sessions.Post("/revoke-user", handlers.RevokeUserSessions(svc.Admin, svc.Audit))
+		}
+
+		finance := api.Group("/org/finance")
+		finance.Use(middleware.RequireRole("org_admin", "hr"))
+		{
+			finance.Get("/overview", handlers.GetOrgBillingOverview(svc.Attendance.GetDB()))
+			finance.Get("/invoices", handlers.ListOrgBillingInvoices(svc.Attendance.GetDB()))
+		}
+
+		support := api.Group("/org/support")
+		support.Use(middleware.RequireRole("org_admin", "hr"))
+		{
+			support.Get("/tickets", handlers.ListSupportTickets(svc.Attendance.GetDB()))
+			support.Post("/tickets", handlers.CreateSupportTicket(svc.Attendance.GetDB()))
+		}
+
+		notifications := api.Group("/org/notifications")
+		notifications.Use(middleware.RequireRole("org_admin", "hr", "dept_manager"))
+		{
+			notifications.Get("/", handlers.ListOrgNotifications(svc.Attendance.GetDB()))
+			notifications.Post("/:id/read", handlers.MarkOrgNotificationRead(svc.Attendance.GetDB()))
 		}
 		// Employee Dashboard
 		employee := api.Group("/employee")
