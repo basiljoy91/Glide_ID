@@ -11,15 +11,71 @@ interface Kiosk {
   name: string
   code: string
   status: string
+  health_status?: string
   location?: string | null
   last_heartbeat_at?: string | null
+  app_version?: string | null
+  os_version?: string | null
+  battery_percent?: number | null
+  network_strength?: number | null
+  memory_usage_percent?: number | null
+  storage_free_mb?: number | null
+  open_incidents?: number
+  pending_commands?: number
 }
 
 interface KioskHistory {
   date: string
   activity_count: number
   anomalies: number
+  incident_count: number
+  uptime_percent: number
+  last_seen_at?: string | null
   last_activity_at?: string | null
+}
+
+interface FleetDashboard {
+  summary: {
+    total_kiosks: number
+    healthy_kiosks: number
+    stale_kiosks: number
+    open_incidents: number
+    pending_commands: number
+    delivered_commands: number
+  }
+  locations: Array<{
+    location: string
+    kiosks: number
+    healthy_kiosks: number
+    stale_kiosks: number
+    activity_count: number
+    anomalies: number
+    open_incidents: number
+    average_uptime_pct: number
+    last_activity_at?: string | null
+    last_heartbeat_at?: string | null
+  }>
+}
+
+interface KioskIncident {
+  id: string
+  incident_type: string
+  severity: string
+  status: string
+  title: string
+  details?: string | null
+  detected_at: string
+  resolved_at?: string | null
+}
+
+interface KioskCommand {
+  id: string
+  command_type: string
+  status: string
+  payload?: Record<string, any>
+  requested_at: string
+  completed_at?: string | null
+  last_error?: string | null
 }
 
 const STATUS_OPTIONS = ['all', 'active', 'inactive', 'maintenance', 'revoked'] as const
@@ -49,6 +105,9 @@ export default function OrgKiosksPage() {
 
   const [historyKioskId, setHistoryKioskId] = useState<string | null>(null)
   const [historyData, setHistoryData] = useState<KioskHistory[]>([])
+  const [dashboard, setDashboard] = useState<FleetDashboard | null>(null)
+  const [incidents, setIncidents] = useState<KioskIncident[]>([])
+  const [commands, setCommands] = useState<KioskCommand[]>([])
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
 
   useEffect(() => {
@@ -61,6 +120,7 @@ export default function OrgKiosksPage() {
       return
     }
     fetchKiosks('all')
+    fetchDashboard()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, user?.role])
 
@@ -82,6 +142,20 @@ export default function OrgKiosksPage() {
       toast.error(e.message || 'Failed to load kiosks')
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const fetchDashboard = async () => {
+    try {
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+      const resp = await fetch(`${base}/api/v1/kiosks/dashboard`, { headers })
+      if (!resp.ok) return
+      const data = await resp.json()
+      setDashboard(data)
+    } catch {
+      setDashboard(null)
     }
   }
 
@@ -113,6 +187,7 @@ export default function OrgKiosksPage() {
       setAddCode('')
       setAddLocation('')
       await fetchKiosks()
+      await fetchDashboard()
     } catch (e: any) {
       toast.error(e.message || 'Failed to create kiosk')
     } finally {
@@ -147,6 +222,7 @@ export default function OrgKiosksPage() {
       toast.success('Kiosk updated')
       setEditId(null)
       await fetchKiosks()
+      await fetchDashboard()
     } catch (e: any) {
       toast.error(e.message || 'Failed to update kiosk')
     } finally {
@@ -160,16 +236,16 @@ export default function OrgKiosksPage() {
       setIsLoadingHistory(true)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
-      const resp = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/kiosks/${id}/history`,
-        { headers }
-      )
-      if (resp.ok) {
-        const data = await resp.json()
-        setHistoryData(data)
-      } else {
-        throw new Error('Could not fetch history')
-      }
+      const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+      const [historyResp, incidentsResp, commandsResp] = await Promise.all([
+        fetch(`${base}/api/v1/kiosks/${id}/history`, { headers }),
+        fetch(`${base}/api/v1/kiosks/${id}/incidents`, { headers }),
+        fetch(`${base}/api/v1/kiosks/${id}/commands`, { headers }),
+      ])
+      if (!historyResp.ok) throw new Error('Could not fetch history')
+      setHistoryData(await historyResp.json())
+      setIncidents(incidentsResp.ok ? await incidentsResp.json() : [])
+      setCommands(commandsResp.ok ? await commandsResp.json() : [])
     } catch (e: any) {
       toast.error(e.message || 'Failed to fetch kiosk history')
       setHistoryKioskId(null)
@@ -197,6 +273,7 @@ export default function OrgKiosksPage() {
       toast.success('Kiosk revoked')
       setPendingRevokeId(null)
       await fetchKiosks()
+      await fetchDashboard()
     } catch (e: any) {
       toast.error(e.message || 'Failed to revoke kiosk')
     } finally {
@@ -235,6 +312,8 @@ export default function OrgKiosksPage() {
 
       setRotatedSecret({ code, secret })
       setPendingRotateId(null)
+      await fetchKiosks()
+      await fetchDashboard()
     } catch (e: any) {
       toast.error(e.message || 'Failed to rotate kiosk secret')
     } finally {
@@ -243,16 +322,54 @@ export default function OrgKiosksPage() {
   }
 
   const isHealthy = (k: Kiosk) => {
-    if (!k.last_heartbeat_at) return false
-    const t = new Date(k.last_heartbeat_at).getTime()
-    if (!Number.isFinite(t)) return false
-    return Date.now() - t <= 10 * 60 * 1000
+    return k.health_status === 'healthy'
   }
 
-  const maxActivityCount = historyData.reduce(
-    (max, day) => Math.max(max, day.activity_count),
-    0
-  )
+  const maxUptimePct = historyData.reduce((max, day) => Math.max(max, day.uptime_percent), 0)
+
+  const queueCommand = async (id: string, commandType: string) => {
+    try {
+      setBusyId(id)
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/kiosks/${id}/commands`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ command_type: commandType }),
+      })
+      const payload = await resp.json().catch(() => ({}))
+      if (!resp.ok) throw new Error(payload.error || `Failed to queue ${commandType} command`)
+      toast.success(`${commandType} command queued`)
+      await fetchKiosks()
+      await fetchDashboard()
+      if (historyKioskId === id) await viewHistory(id)
+    } catch (e: any) {
+      toast.error(e.message || `Failed to queue ${commandType} command`)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const updateIncident = async (incidentId: string, nextStatus: 'acknowledged' | 'resolved') => {
+    if (!historyKioskId) return
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/kiosks/${historyKioskId}/incidents/${incidentId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ status: nextStatus }),
+      })
+      const payload = await resp.json().catch(() => ({}))
+      if (!resp.ok) throw new Error(payload.error || 'Failed to update incident')
+      toast.success(`Incident ${nextStatus}`)
+      await viewHistory(historyKioskId)
+      await fetchDashboard()
+      await fetchKiosks()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update incident')
+    }
+  }
 
   if (!isAuthenticated || !user) return null
 
@@ -267,6 +384,65 @@ export default function OrgKiosksPage() {
         </div>
         <Button onClick={() => setIsAddOpen(true)}>Add New Kiosk</Button>
       </div>
+
+      {dashboard && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
+            {[
+              ['Total kiosks', dashboard.summary.total_kiosks],
+              ['Healthy', dashboard.summary.healthy_kiosks],
+              ['Stale', dashboard.summary.stale_kiosks],
+              ['Open incidents', dashboard.summary.open_incidents],
+              ['Pending commands', dashboard.summary.pending_commands],
+              ['Delivered commands', dashboard.summary.delivered_commands],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg border bg-card p-4">
+                <div className="text-sm text-muted-foreground">{label}</div>
+                <div className="mt-2 text-2xl font-semibold">{Number(value).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-lg border bg-card">
+            <div className="border-b px-4 py-3 text-sm font-semibold text-muted-foreground">Per-location performance</div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="px-4 py-2">Location</th>
+                    <th className="px-4 py-2">Kiosks</th>
+                    <th className="px-4 py-2">Healthy</th>
+                    <th className="px-4 py-2">Stale</th>
+                    <th className="px-4 py-2">Activity</th>
+                    <th className="px-4 py-2">Anomalies</th>
+                    <th className="px-4 py-2">Open Incidents</th>
+                    <th className="px-4 py-2">Avg Uptime</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboard.locations.map((location) => (
+                    <tr key={location.location} className="border-b last:border-b-0">
+                      <td className="px-4 py-2">
+                        <div className="font-medium">{location.location}</div>
+                        <div className="text-xs text-muted-foreground">
+                          Last heartbeat {location.last_heartbeat_at ? new Date(location.last_heartbeat_at).toLocaleString() : '—'}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2">{location.kiosks}</td>
+                      <td className="px-4 py-2">{location.healthy_kiosks}</td>
+                      <td className="px-4 py-2">{location.stale_kiosks}</td>
+                      <td className="px-4 py-2">{location.activity_count}</td>
+                      <td className="px-4 py-2">{location.anomalies}</td>
+                      <td className="px-4 py-2">{location.open_incidents}</td>
+                      <td className="px-4 py-2">{location.average_uptime_pct.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
 
       {isAddOpen && (
         <form onSubmit={handleAdd} className="border rounded-lg p-4 space-y-4 bg-card">
@@ -314,7 +490,7 @@ export default function OrgKiosksPage() {
       {historyKioskId && (
         <div className="border rounded-lg bg-card p-4 space-y-4">
           <div className="flex justify-between items-center">
-            <h2 className="font-semibold">Recorded Activity (Last 7 Days)</h2>
+            <h2 className="font-semibold">Fleet Telemetry (Last 7 Days)</h2>
             <Button size="sm" variant="ghost" onClick={() => setHistoryKioskId(null)}>Close</Button>
           </div>
           {isLoadingHistory ? (
@@ -322,23 +498,23 @@ export default function OrgKiosksPage() {
           ) : (
             <div className="space-y-3">
               <div className="text-sm text-muted-foreground">
-                This view shows actual attendance activity recorded by the kiosk, not inferred uptime.
+                This view shows recorded telemetry, activity, incident counts, and queued fleet commands for the selected kiosk.
               </div>
               <div className="flex justify-between items-end gap-2 overflow-x-auto pb-2">
               {historyData.map((day, i) => {
-                const height =
-                  maxActivityCount > 0 ? Math.max(12, Math.round((day.activity_count / maxActivityCount) * 120)) : 12
+                const height = maxUptimePct > 0 ? Math.max(12, Math.round((day.uptime_percent / maxUptimePct) * 120)) : 12
                 return (
                   <div key={i} className="flex flex-col items-center gap-2 flex-col-reverse group relative">
                     <div className="text-xs text-muted-foreground whitespace-nowrap">{new Date(day.date).toLocaleDateString(undefined, { weekday: 'short' })}</div>
                     <div className="w-10 rounded-t-sm" style={{ 
                       height: `${height}px`, 
-                      backgroundColor: day.anomalies > 0 ? 'hsl(0 84.2% 60.2%)' : day.activity_count > 0 ? 'hsl(142.1 76.2% 36.3%)' : 'hsl(215.4 16.3% 46.9%)'
+                      backgroundColor: day.incident_count > 0 ? 'hsl(0 84.2% 60.2%)' : day.uptime_percent >= 95 ? 'hsl(142.1 76.2% 36.3%)' : 'hsl(43 96% 56%)'
                     }} />
                     <div className="absolute -top-16 w-40 bg-popover text-popover-foreground text-xs p-2 rounded opacity-0 group-hover:opacity-100 transition-opacity shadow">
+                      <div>Uptime: {day.uptime_percent.toFixed(1)}%</div>
                       <div>Activity logs: {day.activity_count}</div>
                       <div>Anomalies: {day.anomalies}</div>
-                      <div>Last activity: {day.last_activity_at ? new Date(day.last_activity_at).toLocaleString() : '—'}</div>
+                      <div>Incidents: {day.incident_count}</div>
                     </div>
                   </div>
                 )
@@ -348,13 +524,92 @@ export default function OrgKiosksPage() {
                 {historyData.map((day) => (
                   <div key={day.date} className="rounded-md border p-3 text-sm">
                     <div className="font-medium">{new Date(day.date).toLocaleDateString()}</div>
+                    <div className="text-muted-foreground">Uptime: {day.uptime_percent.toFixed(1)}%</div>
                     <div className="text-muted-foreground">Activity logs: {day.activity_count}</div>
                     <div className="text-muted-foreground">Anomalies: {day.anomalies}</div>
+                    <div className="text-muted-foreground">Incidents: {day.incident_count}</div>
                     <div className="text-muted-foreground">
-                      Last activity: {day.last_activity_at ? new Date(day.last_activity_at).toLocaleString() : '—'}
+                      Last seen: {day.last_seen_at ? new Date(day.last_seen_at).toLocaleString() : '—'}
                     </div>
                   </div>
                 ))}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="rounded-md border">
+                  <div className="border-b px-3 py-2 text-sm font-medium text-muted-foreground">Incident log</div>
+                  {incidents.length === 0 ? (
+                    <div className="p-3 text-sm text-muted-foreground">No incidents recorded.</div>
+                  ) : (
+                    <div className="divide-y">
+                      {incidents.map((incident) => (
+                        <div key={incident.id} className="p-3 text-sm space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <div className="font-medium">{incident.title}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {incident.incident_type} • {incident.severity} • {incident.status}
+                              </div>
+                            </div>
+                            {incident.status !== 'resolved' && (
+                              <div className="flex gap-2">
+                                {incident.status === 'open' && (
+                                  <Button size="sm" variant="outline" onClick={() => void updateIncident(incident.id, 'acknowledged')}>
+                                    Acknowledge
+                                  </Button>
+                                )}
+                                <Button size="sm" variant="outline" onClick={() => void updateIncident(incident.id, 'resolved')}>
+                                  Resolve
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {incident.details || 'No additional details'}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Detected {new Date(incident.detected_at).toLocaleString()}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-md border">
+                  <div className="border-b px-3 py-2 text-sm font-medium text-muted-foreground">Command queue</div>
+                  <div className="p-3 flex flex-wrap gap-2 border-b">
+                    <Button size="sm" variant="outline" onClick={() => historyKioskId && void queueCommand(historyKioskId, 'lock')} disabled={busyId === historyKioskId}>
+                      Lock
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => historyKioskId && void queueCommand(historyKioskId, 'disable')} disabled={busyId === historyKioskId}>
+                      Disable
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => historyKioskId && void queueCommand(historyKioskId, 'enable')} disabled={busyId === historyKioskId}>
+                      Enable
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => historyKioskId && void queueCommand(historyKioskId, 'reprovision')} disabled={busyId === historyKioskId}>
+                      Reprovision
+                    </Button>
+                  </div>
+                  {commands.length === 0 ? (
+                    <div className="p-3 text-sm text-muted-foreground">No commands queued yet.</div>
+                  ) : (
+                    <div className="divide-y">
+                      {commands.map((command) => (
+                        <div key={command.id} className="p-3 text-sm">
+                          <div className="font-medium">{command.command_type}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {command.status} • Requested {new Date(command.requested_at).toLocaleString()}
+                          </div>
+                          {command.last_error ? (
+                            <div className="text-xs text-destructive">{command.last_error}</div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -456,11 +711,16 @@ export default function OrgKiosksPage() {
                     )}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Health:{' '}
-                    {k.status !== 'active' ? '—' : isHealthy(k) ? 'Healthy' : 'Stale'}
+                    Health: {k.health_status || (k.status !== 'active' ? '—' : isHealthy(k) ? 'Healthy' : 'Stale')}
                   </div>
                   <div className="text-xs text-muted-foreground">
                     Last heartbeat: {k.last_heartbeat_at ? new Date(k.last_heartbeat_at).toLocaleString() : '—'}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Incidents: {k.open_incidents || 0} • Commands: {k.pending_commands || 0}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Version: {k.app_version || '—'} / {k.os_version || '—'}
                   </div>
                   {k.status === 'active' && (
                     <div className="flex flex-wrap gap-2">
@@ -494,13 +754,19 @@ export default function OrgKiosksPage() {
                             </Button>
                           )}
 
-                          {editId !== k.id && (
-                            <Button size="sm" variant="outline" onClick={() => beginEdit(k)}>
-                              Edit
-                            </Button>
-                          )}
-                          <Button size="sm" variant="outline" onClick={() => viewHistory(k.id)}>
-                            Activity
+                      {editId !== k.id && (
+                        <Button size="sm" variant="outline" onClick={() => beginEdit(k)}>
+                          Edit
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" onClick={() => void queueCommand(k.id, 'lock')}>
+                        Lock
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => void queueCommand(k.id, 'disable')}>
+                        Disable
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => viewHistory(k.id)}>
+                            Fleet
                           </Button>
                         </div>
                   )}
@@ -517,6 +783,7 @@ export default function OrgKiosksPage() {
                     <th className="px-4 py-2">Location</th>
                     <th className="px-4 py-2">Status</th>
                     <th className="px-4 py-2">Health</th>
+                    <th className="px-4 py-2">Inventory</th>
                     <th className="px-4 py-2">Last Heartbeat</th>
                     <th className="px-4 py-2 text-right">Actions</th>
                   </tr>
@@ -551,13 +818,12 @@ export default function OrgKiosksPage() {
                         </span>
                       </td>
                       <td className="px-4 py-2">
-                        {k.status !== 'active' ? (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        ) : isHealthy(k) ? (
-                          <span className="text-xs text-green-600 dark:text-green-300">Healthy</span>
-                        ) : (
-                          <span className="text-xs text-yellow-700 dark:text-yellow-300">Stale</span>
-                        )}
+                        <span className="text-xs">{k.health_status || (k.status !== 'active' ? '—' : isHealthy(k) ? 'Healthy' : 'Stale')}</span>
+                      </td>
+                      <td className="px-4 py-2 text-xs text-muted-foreground">
+                        {k.app_version || '—'} / {k.os_version || '—'}
+                        <div>Battery {k.battery_percent ?? '—'}%</div>
+                        <div>Incidents {k.open_incidents || 0} • Commands {k.pending_commands || 0}</div>
                       </td>
                       <td className="px-4 py-2">
                         {k.last_heartbeat_at ? new Date(k.last_heartbeat_at).toLocaleString() : '—'}
@@ -571,10 +837,19 @@ export default function OrgKiosksPage() {
                         ) : k.status === 'active' && (
                           <div className="flex justify-end gap-2">
                             <Button size="sm" variant="outline" onClick={() => viewHistory(k.id)}>
-                              Activity
+                              Fleet
                             </Button>
                             <Button size="sm" variant="outline" onClick={() => beginEdit(k)}>
                               Edit
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => void queueCommand(k.id, 'lock')} disabled={busyId === k.id}>
+                              Lock
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => void queueCommand(k.id, 'disable')} disabled={busyId === k.id}>
+                              Disable
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => void queueCommand(k.id, 'reprovision')} disabled={busyId === k.id}>
+                              Reprovision
                             </Button>
                             {pendingRotateId === k.id ? (
                               <>

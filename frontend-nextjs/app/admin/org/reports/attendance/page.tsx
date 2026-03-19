@@ -41,9 +41,44 @@ type ReportResponse = {
     early_departures: number
   }
   shift_summary?: ShiftSummary[]
+  comparison?: {
+    previous_start_date: string
+    previous_end_date: string
+    check_ins: ComparisonMetric
+    check_outs: ComparisonMetric
+    anomalies: ComparisonMetric
+    late_arrivals: ComparisonMetric
+    early_departures: ComparisonMetric
+  }
+  leaderboards?: {
+    departments: LeaderboardEntry[]
+    managers: LeaderboardEntry[]
+  }
+}
+
+type ComparisonMetric = {
+  current: number
+  previous: number
+  delta: number
+  delta_percent: number
+}
+
+type LeaderboardEntry = {
+  label: string
+  check_ins: number
+  anomalies: number
+  late_arrivals: number
 }
 
 type Department = { id: string; name: string }
+
+type ReportView = {
+  id: string
+  report_type: string
+  name: string
+  filters?: Record<string, any>
+  is_default: boolean
+}
 
 type ReportSchedule = {
   id: string
@@ -85,7 +120,13 @@ export default function AttendanceReportPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isExporting, setIsExporting] = useState(false)
   const [isExportingPdf, setIsExportingPdf] = useState(false)
+  const [isExportingPayroll, setIsExportingPayroll] = useState(false)
+  const [isExportingCompliance, setIsExportingCompliance] = useState(false)
   const [departments, setDepartments] = useState<Department[]>([])
+  const [views, setViews] = useState<ReportView[]>([])
+  const [viewName, setViewName] = useState('')
+  const [isSavingView, setIsSavingView] = useState(false)
+  const [busyViewId, setBusyViewId] = useState<string | null>(null)
 
   const [schedules, setSchedules] = useState<ReportSchedule[]>([])
   const [scheduleName, setScheduleName] = useState('')
@@ -120,6 +161,7 @@ export default function AttendanceReportPage() {
     void load(defaultStart, defaultEnd)
     void loadDepartments()
     void loadSchedules()
+    void loadViews()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, user?.role])
 
@@ -149,6 +191,32 @@ export default function AttendanceReportPage() {
     }
   }
 
+  const loadViews = async () => {
+    try {
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${base}/api/v1/reports/views`, { headers })
+      if (!resp.ok) return
+      const data = await resp.json()
+      setViews(Array.isArray(data) ? data : [])
+    } catch {
+      setViews([])
+    }
+  }
+
+  const buildReportParams = (overrides?: Partial<Record<string, string>>) => {
+    const params = new URLSearchParams()
+    params.set('start_date', overrides?.start_date ?? startDate)
+    params.set('end_date', overrides?.end_date ?? endDate)
+    const nextDepartmentId = overrides?.department_id ?? departmentId
+    const nextEmployeeId = overrides?.employee_id ?? employeeId.trim()
+    if (nextDepartmentId) params.set('department_id', nextDepartmentId)
+    if (nextEmployeeId) params.set('employee_id', nextEmployeeId)
+    params.set('late_grace_minutes', overrides?.late_grace_minutes ?? lateGrace || '10')
+    params.set('early_grace_minutes', overrides?.early_grace_minutes ?? earlyGrace || '10')
+    return params
+  }
+
   const load = async (s = startDate, e = endDate) => {
     if (!s || !e || e < s) {
       toast.error('Please choose a valid date range')
@@ -158,13 +226,7 @@ export default function AttendanceReportPage() {
       setIsLoading(true)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
-      const params = new URLSearchParams()
-      params.set('start_date', s)
-      params.set('end_date', e)
-      if (departmentId) params.set('department_id', departmentId)
-      if (employeeId.trim()) params.set('employee_id', employeeId.trim())
-      params.set('late_grace_minutes', lateGrace || '10')
-      params.set('early_grace_minutes', earlyGrace || '10')
+      const params = buildReportParams({ start_date: s, end_date: e })
 
       const resp = await fetch(`${base}/api/v1/reports/attendance?${params.toString()}`, { headers })
       if (!resp.ok) {
@@ -202,11 +264,7 @@ export default function AttendanceReportPage() {
       setIsExporting(true)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
-      const params = new URLSearchParams()
-      params.set('start_date', startDate)
-      params.set('end_date', endDate)
-      if (departmentId) params.set('department_id', departmentId)
-      if (employeeId.trim()) params.set('employee_id', employeeId.trim())
+      const params = buildReportParams()
 
       const resp = await fetch(`${base}/api/v1/reports/export?${params.toString()}`, {
         method: 'POST',
@@ -242,11 +300,7 @@ export default function AttendanceReportPage() {
       setIsExportingPdf(true)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
-      const params = new URLSearchParams()
-      params.set('start_date', startDate)
-      params.set('end_date', endDate)
-      if (departmentId) params.set('department_id', departmentId)
-      if (employeeId.trim()) params.set('employee_id', employeeId.trim())
+      const params = buildReportParams()
 
       const resp = await fetch(`${base}/api/v1/reports/attendance/pdf?${params.toString()}`, {
         headers,
@@ -269,6 +323,130 @@ export default function AttendanceReportPage() {
       toast.error(e.message || 'Failed to export PDF')
     } finally {
       setIsExportingPdf(false)
+    }
+  }
+
+  const exportPayroll = async () => {
+    try {
+      setIsExportingPayroll(true)
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${base}/api/v1/reports/export/payroll?${buildReportParams().toString()}`, { headers })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to export payroll CSV')
+      }
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `payroll-ready-${startDate}-to-${endDate}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast.success('Payroll-ready export downloaded')
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to export payroll CSV')
+    } finally {
+      setIsExportingPayroll(false)
+    }
+  }
+
+  const exportCompliance = async () => {
+    try {
+      setIsExportingCompliance(true)
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${base}/api/v1/reports/export/compliance?${buildReportParams().toString()}`, { headers })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to export compliance report')
+      }
+      const signature = resp.headers.get('X-Report-Signature')
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `compliance-report-${startDate}-to-${endDate}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast.success(signature ? `Compliance report downloaded (signature ${signature.slice(0, 12)}...)` : 'Compliance report downloaded')
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to export compliance report')
+    } finally {
+      setIsExportingCompliance(false)
+    }
+  }
+
+  const saveView = async () => {
+    if (!viewName.trim()) {
+      toast.error('View name is required')
+      return
+    }
+    try {
+      setIsSavingView(true)
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${base}/api/v1/reports/views`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          report_type: 'attendance',
+          name: viewName.trim(),
+          filters: {
+            start_date: startDate,
+            end_date: endDate,
+            department_id: departmentId || undefined,
+            employee_id: employeeId.trim() || undefined,
+            late_grace_minutes: lateGrace,
+            early_grace_minutes: earlyGrace,
+          },
+        }),
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to save report view')
+      }
+      toast.success('Report view saved')
+      setViewName('')
+      await loadViews()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to save report view')
+    } finally {
+      setIsSavingView(false)
+    }
+  }
+
+  const applyView = (view: ReportView) => {
+    const filters = view.filters || {}
+    setStartDate(filters.start_date || defaultStart)
+    setEndDate(filters.end_date || defaultEnd)
+    setDepartmentId(filters.department_id || '')
+    setEmployeeId(filters.employee_id || '')
+    setLateGrace(String(filters.late_grace_minutes || '10'))
+    setEarlyGrace(String(filters.early_grace_minutes || '10'))
+    toast.success(`Loaded view: ${view.name}`)
+  }
+
+  const deleteView = async (id: string) => {
+    try {
+      setBusyViewId(id)
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${base}/api/v1/reports/views/${id}`, { method: 'DELETE', headers })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to delete report view')
+      }
+      toast.success('Report view deleted')
+      await loadViews()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to delete report view')
+    } finally {
+      setBusyViewId(null)
     }
   }
 
@@ -561,6 +739,43 @@ export default function AttendanceReportPage() {
             </Button>
           </div>
         </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="md:col-span-2">
+            <div className="text-sm font-medium mb-1">Saved report view</div>
+            <div className="flex gap-2">
+              <Input value={viewName} onChange={(e) => setViewName(e.target.value)} placeholder="Quarterly compliance baseline" />
+              <Button variant="outline" onClick={saveView} disabled={isSavingView}>
+                {isSavingView ? 'Saving…' : 'Save view'}
+              </Button>
+            </div>
+          </div>
+          <div className="flex md:items-end gap-2 md:col-span-2">
+            <Button variant="outline" onClick={exportPayroll} disabled={isExportingPayroll} className="w-full">
+              {isExportingPayroll ? 'Exporting…' : 'Payroll Export'}
+            </Button>
+            <Button variant="outline" onClick={exportCompliance} disabled={isExportingCompliance} className="w-full">
+              {isExportingCompliance ? 'Exporting…' : 'Signed Compliance Export'}
+            </Button>
+          </div>
+        </div>
+        {views.length > 0 && (
+          <div className="rounded-md border p-3 space-y-3">
+            <div className="text-sm font-medium">Saved views</div>
+            <div className="flex flex-wrap gap-2">
+              {views.map((view) => (
+                <div key={view.id} className="flex items-center gap-2 rounded-full border px-3 py-1 text-sm">
+                  <button type="button" className="font-medium" onClick={() => applyView(view)}>
+                    {view.name}
+                  </button>
+                  {view.is_default ? <span className="text-xs text-muted-foreground">default</span> : null}
+                  <button type="button" className="text-xs text-muted-foreground" onClick={() => void deleteView(view.id)} disabled={busyViewId === view.id}>
+                    delete
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" onClick={() => applyQuickRange(7)}>
             Last 7 days
@@ -583,6 +798,30 @@ export default function AttendanceReportPage() {
         <div className="text-sm text-muted-foreground">No data.</div>
       ) : (
         <>
+          {report.comparison && (
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              {[
+                ['Check-ins', report.comparison.check_ins],
+                ['Check-outs', report.comparison.check_outs],
+                ['Anomalies', report.comparison.anomalies],
+                ['Late Arrivals', report.comparison.late_arrivals],
+                ['Early Departures', report.comparison.early_departures],
+              ].map(([label, metric]) => {
+                const item = metric as ComparisonMetric
+                return (
+                  <div key={label} className="bg-card border border-border rounded-lg p-4 shadow-sm">
+                    <div className="text-sm text-muted-foreground">{label}</div>
+                    <div className="mt-2 text-2xl font-semibold">{item.current.toLocaleString()}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Prev {item.previous.toLocaleString()} • {item.delta >= 0 ? '+' : ''}
+                      {item.delta.toLocaleString()} ({item.delta_percent.toFixed(1)}%)
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="bg-card border border-border rounded-lg p-4 shadow-sm lg:col-span-1">
               <div className="text-sm font-medium text-muted-foreground mb-2">Totals</div>
@@ -685,6 +924,52 @@ export default function AttendanceReportPage() {
               </div>
             </div>
           ) : null}
+
+          {report.leaderboards && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="bg-card border border-border rounded-lg p-4 shadow-sm">
+                <div className="text-sm font-medium text-muted-foreground mb-3">Department leaderboard</div>
+                <div className="space-y-3">
+                  {report.leaderboards.departments.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No department ranking data yet.</div>
+                  ) : (
+                    report.leaderboards.departments.map((entry) => (
+                      <div key={entry.label} className="flex items-center justify-between text-sm">
+                        <div>
+                          <div className="font-medium">{entry.label}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {entry.anomalies} anomalies • {entry.late_arrivals} late arrivals
+                          </div>
+                        </div>
+                        <div className="text-right font-medium">{entry.check_ins.toLocaleString()} check-ins</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-card border border-border rounded-lg p-4 shadow-sm">
+                <div className="text-sm font-medium text-muted-foreground mb-3">Manager leaderboard</div>
+                <div className="space-y-3">
+                  {report.leaderboards.managers.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No manager ranking data yet.</div>
+                  ) : (
+                    report.leaderboards.managers.map((entry) => (
+                      <div key={entry.label} className="flex items-center justify-between text-sm">
+                        <div>
+                          <div className="font-medium">{entry.label}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {entry.anomalies} anomalies • {entry.late_arrivals} late arrivals
+                          </div>
+                        </div>
+                        <div className="text-right font-medium">{entry.check_ins.toLocaleString()} check-ins</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 

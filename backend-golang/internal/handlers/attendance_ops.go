@@ -360,16 +360,19 @@ func ReviewLeaveRequest(db *pgxpool.Pool) fiber.Handler {
 				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Leave request is outside your scope"})
 			}
 		}
-		tag, err := db.Exec(c.Context(), `
-			UPDATE leave_requests
-			SET status = $1, reviewed_by = $2, reviewed_at = NOW(), review_note = $3, updated_at = NOW()
-			WHERE id = $4 AND tenant_id = $5
-		`, status, actorUserID, nullableString(body.ReviewNote), requestID, tenantID)
+		tx, err := db.Begin(c.Context())
 		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start leave review"})
+		}
+		defer tx.Rollback(c.Context())
+		if err := reviewLeaveRequestTx(c.Context(), tx, tenantID, actorUserID, requestID, status, body.ReviewNote); err != nil {
+			if errors.Is(err, errWorkflowRequestNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Leave request not found"})
+			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to review leave request"})
 		}
-		if tag.RowsAffected() == 0 {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Leave request not found"})
+		if err := tx.Commit(c.Context()); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize leave review"})
 		}
 		return c.JSON(fiber.Map{"success": true})
 	}
@@ -515,42 +518,23 @@ func ReviewRegularizationRequest(db *pgxpool.Pool) fiber.Handler {
 		}
 		defer tx.Rollback(c.Context())
 		var userID string
-		var attendanceLogID *uuid.UUID
-		var requestedStatus string
-		var requestedPunchTime time.Time
+		var ignoredAttendanceLogID *uuid.UUID
+		var ignoredRequestedStatus string
+		var ignoredRequestedPunchTime time.Time
 		if err := tx.QueryRow(c.Context(), `
 			SELECT rr.user_id, rr.attendance_log_id, rr.requested_status::text, rr.requested_punch_time
 			FROM attendance_regularization_requests rr
 			WHERE rr.id = $1 AND rr.tenant_id = $2
-		`, requestID, tenantID).Scan(&userID, &attendanceLogID, &requestedStatus, &requestedPunchTime); err != nil {
+		`, requestID, tenantID).Scan(&userID, &ignoredAttendanceLogID, &ignoredRequestedStatus, &ignoredRequestedPunchTime); err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Regularization request not found"})
 		}
 		if err := ensureUserWithinScope(*c, db, tenantID, userID, scopedDepartmentID); err != nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Regularization request is outside your scope"})
 		}
-		if status == "approved" {
-			if attendanceLogID != nil {
-				if _, err := tx.Exec(c.Context(), `
-					UPDATE attendance_logs
-					SET status = $1, punch_time = $2, verification_method = 'manual', updated_at = NOW()
-					WHERE id = $3 AND tenant_id = $4
-				`, requestedStatus, requestedPunchTime, *attendanceLogID, tenantID); err != nil {
-					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to apply regularization to attendance log"})
-				}
-			} else {
-				if _, err := tx.Exec(c.Context(), `
-					INSERT INTO attendance_logs (id, tenant_id, user_id, status, punch_time, verification_method, notes)
-					VALUES ($1, $2, $3, $4, $5, 'manual', $6)
-				`, uuid.New(), tenantID, userID, requestedStatus, requestedPunchTime, "Created from approved regularization request"); err != nil {
-					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create corrected attendance log"})
-				}
+		if err := reviewRegularizationRequestTx(c.Context(), tx, tenantID, actorUserID, requestID, status, body.ReviewNote); err != nil {
+			if errors.Is(err, errWorkflowRequestNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Regularization request not found"})
 			}
-		}
-		if _, err := tx.Exec(c.Context(), `
-			UPDATE attendance_regularization_requests
-			SET status = $1, reviewed_by = $2, reviewed_at = NOW(), review_note = $3, updated_at = NOW()
-			WHERE id = $4 AND tenant_id = $5
-		`, status, actorUserID, nullableString(body.ReviewNote), requestID, tenantID); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to review regularization request"})
 		}
 		if err := tx.Commit(c.Context()); err != nil {
@@ -694,16 +678,19 @@ func ReviewOvertimeRequest(db *pgxpool.Pool) fiber.Handler {
 		if status == "approved" && approvedMinutes <= 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "approved_minutes must be greater than zero for approved overtime"})
 		}
-		tag, err := db.Exec(c.Context(), `
-			UPDATE overtime_requests
-			SET status = $1, approved_minutes = $2, reviewed_by = $3, reviewed_at = NOW(), review_note = $4, updated_at = NOW()
-			WHERE id = $5 AND tenant_id = $6
-		`, status, approvedMinutes, actorUserID, nullableString(body.ReviewNote), requestID, tenantID)
+		tx, err := db.Begin(c.Context())
 		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start overtime review"})
+		}
+		defer tx.Rollback(c.Context())
+		if err := reviewOvertimeRequestTx(c.Context(), tx, tenantID, actorUserID, requestID, status, approvedMinutes, body.ReviewNote); err != nil {
+			if errors.Is(err, errWorkflowRequestNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Overtime request not found"})
+			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to review overtime request"})
 		}
-		if tag.RowsAffected() == 0 {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Overtime request not found"})
+		if err := tx.Commit(c.Context()); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize overtime review"})
 		}
 		return c.JSON(fiber.Map{"success": true})
 	}

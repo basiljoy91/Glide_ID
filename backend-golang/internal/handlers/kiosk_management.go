@@ -14,14 +14,23 @@ import (
 )
 
 type kioskDTO struct {
-	ID              uuid.UUID  `json:"id"`
-	Name            string     `json:"name"`
-	Code            string     `json:"code"`
-	Status          string     `json:"status"`
-	Location        *string    `json:"location"`
-	LastHeartbeatAt *time.Time `json:"last_heartbeat_at"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID                 uuid.UUID  `json:"id"`
+	Name               string     `json:"name"`
+	Code               string     `json:"code"`
+	Status             string     `json:"status"`
+	Location           *string    `json:"location"`
+	LastHeartbeatAt    *time.Time `json:"last_heartbeat_at"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	HealthStatus       string     `json:"health_status"`
+	AppVersion         *string    `json:"app_version,omitempty"`
+	OSVersion          *string    `json:"os_version,omitempty"`
+	BatteryPercent     *int       `json:"battery_percent,omitempty"`
+	NetworkStrength    *int       `json:"network_strength,omitempty"`
+	MemoryUsagePercent *int       `json:"memory_usage_percent,omitempty"`
+	StorageFreeMB      *int       `json:"storage_free_mb,omitempty"`
+	OpenIncidents      int        `json:"open_incidents"`
+	PendingCommands    int        `json:"pending_commands"`
 }
 
 // ListKiosks lists kiosks for the tenant
@@ -48,9 +57,35 @@ func ListKiosks(db *pgxpool.Pool) fiber.Handler {
 		_, _ = tx.Exec(ctx, "SELECT set_config('app.current_tenant_id', $1, true)", tenantID)
 
 		baseSQL := `
-			SELECT id, name, code, status, location, last_heartbeat_at, created_at, updated_at
-			FROM kiosks
-			WHERE tenant_id = $1
+			WITH latest AS (
+				SELECT DISTINCT ON (kiosk_id)
+					kiosk_id, app_version, os_version, battery_percent, network_strength, memory_usage_percent, storage_free_mb
+				FROM kiosk_telemetry_samples
+				WHERE tenant_id = $1
+				ORDER BY kiosk_id, recorded_at DESC
+			),
+			open_incidents AS (
+				SELECT kiosk_id, COUNT(*) AS open_incidents
+				FROM kiosk_incidents
+				WHERE tenant_id = $1 AND status IN ('open', 'acknowledged')
+				GROUP BY kiosk_id
+			),
+			pending_commands AS (
+				SELECT kiosk_id, COUNT(*) AS pending_commands
+				FROM kiosk_commands
+				WHERE tenant_id = $1 AND status IN ('queued', 'delivered')
+				GROUP BY kiosk_id
+			)
+			SELECT
+				k.id, k.name, k.code, k.status, k.location, k.last_heartbeat_at, k.created_at, k.updated_at,
+				l.app_version, l.os_version, l.battery_percent, l.network_strength, l.memory_usage_percent, l.storage_free_mb,
+				COALESCE(oi.open_incidents, 0),
+				COALESCE(pc.pending_commands, 0)
+			FROM kiosks k
+			LEFT JOIN latest l ON l.kiosk_id = k.id
+			LEFT JOIN open_incidents oi ON oi.kiosk_id = k.id
+			LEFT JOIN pending_commands pc ON pc.kiosk_id = k.id
+			WHERE k.tenant_id = $1
 		`
 		args := []any{tenantID}
 		if statusFilter != "" {
@@ -68,9 +103,10 @@ func ListKiosks(db *pgxpool.Pool) fiber.Handler {
 		out := make([]kioskDTO, 0)
 		for rows.Next() {
 			var k kioskDTO
-			if err := rows.Scan(&k.ID, &k.Name, &k.Code, &k.Status, &k.Location, &k.LastHeartbeatAt, &k.CreatedAt, &k.UpdatedAt); err != nil {
+			if err := rows.Scan(&k.ID, &k.Name, &k.Code, &k.Status, &k.Location, &k.LastHeartbeatAt, &k.CreatedAt, &k.UpdatedAt, &k.AppVersion, &k.OSVersion, &k.BatteryPercent, &k.NetworkStrength, &k.MemoryUsagePercent, &k.StorageFreeMB, &k.OpenIncidents, &k.PendingCommands); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read kiosks"})
 			}
+			k.HealthStatus = computeKioskHealthStatus(k.Status, k.LastHeartbeatAt, k.BatteryPercent)
 			out = append(out, k)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -261,6 +297,15 @@ func RotateKioskSecret(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kiosk not found"})
 		}
 
+		payload := map[string]interface{}{
+			"manual_secret_rotation": true,
+			"kiosk_code":             kioskCode,
+		}
+		_, _ = tx.Exec(ctx, `
+			INSERT INTO kiosk_commands (id, tenant_id, kiosk_id, command_type, payload, requested_by, status, completed_at)
+			VALUES ($1, $2, $3, 'reprovision', $4, NULL, 'completed', NOW())
+		`, uuid.New(), tenantID, kioskID, payload)
+
 		if err := tx.Commit(ctx); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize secret rotation"})
 		}
@@ -274,7 +319,7 @@ func RotateKioskSecret(db *pgxpool.Pool) fiber.Handler {
 	}
 }
 
-// GetKioskHistory returns recorded kiosk activity history for the last 7 days.
+// GetKioskHistory returns real kiosk telemetry history for the last 7 days.
 func GetKioskHistory(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
@@ -305,6 +350,28 @@ func GetKioskHistory(db *pgxpool.Pool) fiber.Handler {
 			WITH days AS (
 				SELECT generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, INTERVAL '1 day')::date AS day
 			),
+			samples AS (
+				SELECT
+					recorded_at::date AS day,
+					COUNT(*) AS sample_count,
+					COUNT(*) FILTER (WHERE status = 'active') AS active_samples,
+					MAX(recorded_at) AS last_seen_at
+				FROM kiosk_telemetry_samples
+				WHERE tenant_id = $1
+				  AND kiosk_id = $2
+				  AND recorded_at::date >= CURRENT_DATE - INTERVAL '6 days'
+				GROUP BY recorded_at::date
+			),
+			incidents AS (
+				SELECT
+					detected_at::date AS day,
+					COUNT(*) AS incident_count
+				FROM kiosk_incidents
+				WHERE tenant_id = $1
+				  AND kiosk_id = $2
+				  AND detected_at::date >= CURRENT_DATE - INTERVAL '6 days'
+				GROUP BY detected_at::date
+			),
 			activity AS (
 				SELECT
 					al.punch_time::date AS day,
@@ -317,9 +384,24 @@ func GetKioskHistory(db *pgxpool.Pool) fiber.Handler {
 				  AND al.punch_time::date >= CURRENT_DATE - INTERVAL '6 days'
 				GROUP BY al.punch_time::date
 			)
-			SELECT d.day, COALESCE(a.activity_count, 0), COALESCE(a.anomalies, 0), a.last_activity_at
+			SELECT
+				d.day,
+				COALESCE(a.activity_count, 0),
+				COALESCE(a.anomalies, 0),
+				a.last_activity_at,
+				COALESCE(i.incident_count, 0),
+				COALESCE(
+					ROUND(
+						CASE WHEN s.sample_count = 0 THEN 0
+						ELSE s.active_samples * 100.0 / s.sample_count
+						END, 2
+					), 0
+				) AS uptime_percent,
+				s.last_seen_at
 			FROM days d
 			LEFT JOIN activity a ON a.day = d.day
+			LEFT JOIN incidents i ON i.day = d.day
+			LEFT JOIN samples s ON s.day = d.day
 			ORDER BY d.day ASC
 		`, tenantID, kioskID)
 		if err != nil {
@@ -333,7 +415,10 @@ func GetKioskHistory(db *pgxpool.Pool) fiber.Handler {
 			var activityCount int
 			var anomalies int
 			var lastActivityAt *time.Time
-			if err := rows.Scan(&day, &activityCount, &anomalies, &lastActivityAt); err != nil {
+			var incidentCount int
+			var uptimePercent float64
+			var lastSeenAt *time.Time
+			if err := rows.Scan(&day, &activityCount, &anomalies, &lastActivityAt, &incidentCount, &uptimePercent, &lastSeenAt); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read kiosk history"})
 			}
 
@@ -342,11 +427,19 @@ func GetKioskHistory(db *pgxpool.Pool) fiber.Handler {
 				value := lastActivityAt.UTC().Format(time.RFC3339)
 				lastActivityStr = &value
 			}
+			var lastSeenStr *string
+			if lastSeenAt != nil {
+				value := lastSeenAt.UTC().Format(time.RFC3339)
+				lastSeenStr = &value
+			}
 
 			history = append(history, fiber.Map{
 				"date":             day.Format("2006-01-02"),
 				"activity_count":   activityCount,
 				"anomalies":        anomalies,
+				"incident_count":   incidentCount,
+				"uptime_percent":   uptimePercent,
+				"last_seen_at":     lastSeenStr,
 				"last_activity_at": lastActivityStr,
 			})
 		}

@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,11 +34,28 @@ type execExpectation struct {
 	err         error
 }
 
+type queryExpectation struct {
+	sqlContains string
+	args        []any
+	rows        [][]any
+	err         error
+}
+
+type fakeRows struct {
+	t      *testing.T
+	rows   [][]any
+	idx    int
+	closed bool
+	err    error
+}
+
 type fakeTx struct {
 	t                 *testing.T
 	queryRowQueue     []queryRowExpectation
+	queryQueue        []queryExpectation
 	execQueue         []execExpectation
 	queryRowCallCount int
+	queryCallCount    int
 	execCallCount     int
 }
 
@@ -53,8 +72,25 @@ func (f *fakeTx) LargeObjects() pgx.LargeObjects { panic("unexpected LargeObject
 func (f *fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
 	panic("unexpected Prepare")
 }
-func (f *fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) { panic("unexpected Query") }
-func (f *fakeTx) Conn() *pgx.Conn                                         { return nil }
+func (f *fakeTx) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if len(f.queryQueue) == 0 {
+		f.t.Fatalf("unexpected Query: %s", sql)
+	}
+	exp := f.queryQueue[0]
+	f.queryQueue = f.queryQueue[1:]
+	f.queryCallCount++
+	if !strings.Contains(sql, exp.sqlContains) {
+		f.t.Fatalf("Query SQL mismatch\nwant contains: %s\ngot: %s", exp.sqlContains, sql)
+	}
+	if !reflect.DeepEqual(args, exp.args) {
+		f.t.Fatalf("Query args mismatch\nwant: %#v\ngot: %#v", exp.args, args)
+	}
+	if exp.err != nil {
+		return nil, exp.err
+	}
+	return &fakeRows{t: f.t, rows: exp.rows, idx: -1}, nil
+}
+func (f *fakeTx) Conn() *pgx.Conn { return nil }
 
 func (f *fakeTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	if len(f.queryRowQueue) == 0 {
@@ -96,6 +132,9 @@ func (f *fakeTx) assertDone() {
 	if len(f.execQueue) != 0 {
 		f.t.Fatalf("unused Exec expectations: %d", len(f.execQueue))
 	}
+	if len(f.queryQueue) != 0 {
+		f.t.Fatalf("unused Query expectations: %d", len(f.queryQueue))
+	}
 }
 
 func boolRow(value bool) func(dest ...any) error {
@@ -127,6 +166,61 @@ func errRow(err error) func(dest ...any) error {
 		return err
 	}
 }
+
+func (r *fakeRows) Close() { r.closed = true }
+func (r *fakeRows) Err() error {
+	return r.err
+}
+func (r *fakeRows) CommandTag() pgconn.CommandTag { return pgconn.CommandTag{} }
+func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription {
+	return nil
+}
+func (r *fakeRows) Next() bool {
+	if r.idx+1 >= len(r.rows) {
+		return false
+	}
+	r.idx++
+	return true
+}
+func (r *fakeRows) Scan(dest ...any) error {
+	if r.idx < 0 || r.idx >= len(r.rows) {
+		return errors.New("scan called with no current row")
+	}
+	values := r.rows[r.idx]
+	if len(values) != len(dest) {
+		return fmt.Errorf("row length mismatch: got %d values for %d destinations", len(values), len(dest))
+	}
+	for i, value := range values {
+		target := reflect.ValueOf(dest[i])
+		if target.Kind() != reflect.Ptr || target.IsNil() {
+			return fmt.Errorf("destination %d is not a non-nil pointer", i)
+		}
+		elem := target.Elem()
+		if value == nil {
+			elem.Set(reflect.Zero(elem.Type()))
+			continue
+		}
+		v := reflect.ValueOf(value)
+		if v.Type().AssignableTo(elem.Type()) {
+			elem.Set(v)
+			continue
+		}
+		if v.Type().ConvertibleTo(elem.Type()) {
+			elem.Set(v.Convert(elem.Type()))
+			continue
+		}
+		return fmt.Errorf("cannot assign %T to %s", value, elem.Type())
+	}
+	return nil
+}
+func (r *fakeRows) Values() ([]any, error) {
+	if r.idx < 0 || r.idx >= len(r.rows) {
+		return nil, errors.New("no current row")
+	}
+	return r.rows[r.idx], nil
+}
+func (r *fakeRows) RawValues() [][]byte { return nil }
+func (r *fakeRows) Conn() *pgx.Conn     { return nil }
 
 func TestSyncDepartmentManagerAssignmentTx_ReassignsAndDemotesPreviousManager(t *testing.T) {
 	t.Parallel()

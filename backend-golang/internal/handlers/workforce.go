@@ -935,44 +935,18 @@ func mutateBulkEditBatchStatus(c *fiber.Ctx, db *pgxpool.Pool, fromStatus string
 		return fiber.NewError(fiber.StatusInternalServerError, "Failed to start bulk edit update")
 	}
 	defer tx.Rollback(c.Context())
-	var status string
-	if err := tx.QueryRow(c.Context(), `SELECT status FROM bulk_change_batches WHERE id = $1 AND tenant_id = $2`, batchID, tenantID).Scan(&status); err != nil {
-		return fiber.NewError(fiber.StatusNotFound, "Bulk edit batch not found")
-	}
-	if status != fromStatus {
-		if apply {
-			return fiber.NewError(fiber.StatusBadRequest, "Bulk edit batch is not ready to apply")
+	if err := mutateBulkEditBatchStatusTx(c.Context(), tx, tenantID, batchID, fromStatus, apply); err != nil {
+		switch {
+		case errors.Is(err, errBulkEditBatchNotFound):
+			return fiber.NewError(fiber.StatusNotFound, "Bulk edit batch not found")
+		case errors.Is(err, errBulkEditBatchInvalidFlow):
+			if apply {
+				return fiber.NewError(fiber.StatusBadRequest, "Bulk edit batch is not ready to apply")
+			}
+			return fiber.NewError(fiber.StatusBadRequest, "Bulk edit batch cannot be rolled back")
+		default:
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
-		return fiber.NewError(fiber.StatusBadRequest, "Bulk edit batch cannot be rolled back")
-	}
-	rows, err := tx.Query(c.Context(), `SELECT user_id, before_state, after_state FROM bulk_change_batch_items WHERE batch_id = $1 ORDER BY id`, batchID)
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "Failed to load bulk edit items")
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var userID uuid.UUID
-		var beforeRaw, afterRaw []byte
-		if err := rows.Scan(&userID, &beforeRaw, &afterRaw); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "Failed to read bulk edit items")
-		}
-		state := map[string]any{}
-		if apply {
-			_ = json.Unmarshal(afterRaw, &state)
-		} else {
-			_ = json.Unmarshal(beforeRaw, &state)
-		}
-		if err := applyBulkChangeState(c.Context(), tx, tenantID, userID, state); err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "Failed to apply bulk edit state")
-		}
-	}
-	if apply {
-		_, err = tx.Exec(c.Context(), `UPDATE bulk_change_batches SET status = 'applied', applied_at = NOW() WHERE id = $1 AND tenant_id = $2`, batchID, tenantID)
-	} else {
-		_, err = tx.Exec(c.Context(), `UPDATE bulk_change_batches SET status = 'rolled_back', rolled_back_at = NOW() WHERE id = $1 AND tenant_id = $2`, batchID, tenantID)
-	}
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "Failed to update bulk edit batch status")
 	}
 	if err := tx.Commit(c.Context()); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "Failed to finalize bulk edit update")

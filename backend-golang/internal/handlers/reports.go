@@ -445,6 +445,23 @@ func GetAttendanceReport(reporting *services.ReportingService) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
-		return c.JSON(resp)
+		comparison, err := buildAttendanceComparison(ctx, reporting, tenantID, start, end, departmentID, userID, employeeID, lateGrace, earlyGrace)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to build comparison"})
+		}
+		leaderboards, err := buildAttendanceLeaderboards(ctx, reporting.GetDB(), tenantID, start, end, departmentID, scopedDepartmentID, lateGrace)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to build leaderboards"})
+		}
+		return c.JSON(fiber.Map{
+			"start_date":    resp.StartDate,
+			"end_date":      resp.EndDate,
+			"filters":       resp.Filters,
+			"days":          resp.Days,
+			"totals":        resp.Totals,
+			"shift_summary": resp.ShiftSummary,
+			"comparison":    comparison,
+			"leaderboards":  leaderboards,
+		})
 	}
 }
