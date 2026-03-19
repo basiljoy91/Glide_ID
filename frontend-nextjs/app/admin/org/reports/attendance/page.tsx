@@ -212,8 +212,8 @@ export default function AttendanceReportPage() {
     const nextEmployeeId = overrides?.employee_id ?? employeeId.trim()
     if (nextDepartmentId) params.set('department_id', nextDepartmentId)
     if (nextEmployeeId) params.set('employee_id', nextEmployeeId)
-    params.set('late_grace_minutes', overrides?.late_grace_minutes ?? lateGrace || '10')
-    params.set('early_grace_minutes', overrides?.early_grace_minutes ?? earlyGrace || '10')
+    params.set('late_grace_minutes', overrides?.late_grace_minutes ?? (lateGrace || '10'))
+    params.set('early_grace_minutes', overrides?.early_grace_minutes ?? (earlyGrace || '10'))
     return params
   }
 
@@ -579,7 +579,7 @@ export default function AttendanceReportPage() {
         headers,
         body: JSON.stringify({
           report_type: schedule.report_type,
-          name: (overrides?.name as string | undefined) ?? editingScheduleName || null,
+          name: (overrides?.name as string | undefined) ?? (editingScheduleName || null),
           frequency: nextFrequency,
           day_of_week:
             nextFrequency === 'weekly'
