@@ -305,37 +305,13 @@ func DeleteDepartment(db *pgxpool.Pool) fiber.Handler {
 		}
 		defer tx.Rollback(c.Context())
 
-		if err := validateDepartmentExistsTx(ctx, tx, tenantID, deptUUID); err != nil {
-			status := fiber.StatusInternalServerError
-			message := "Failed to delete department"
-			if errors.Is(err, errDepartmentNotFound) {
-				status = fiber.StatusNotFound
-				message = "Department not found"
+		if err := cleanupDepartmentDeleteTx(ctx, tx, tenantID, deptUUID); err != nil {
+			switch {
+			case errors.Is(err, errDepartmentNotFound):
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Department not found"})
+			default:
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete department"})
 			}
-			return c.Status(status).JSON(fiber.Map{"error": message})
-		}
-
-		if _, err := tx.Exec(ctx, `
-			UPDATE users
-			SET department_id = NULL,
-				role = CASE WHEN role = 'dept_manager' THEN 'employee' ELSE role END,
-				updated_at = NOW()
-			WHERE tenant_id = $1 AND department_id = $2 AND deleted_at IS NULL
-		`, tenantID, deptUUID); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to unlink department users",
-			})
-		}
-
-		_, err = tx.Exec(ctx, `
-			UPDATE departments
-			SET manager_id = NULL, deleted_at = NOW(), updated_at = NOW()
-			WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
-		`, deptUUID, tenantID)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to delete department",
-			})
 		}
 
 		if err := tx.Commit(c.Context()); err != nil {

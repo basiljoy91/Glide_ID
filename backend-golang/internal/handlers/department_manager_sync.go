@@ -200,3 +200,26 @@ func syncUserDepartmentManagerRoleTx(ctx context.Context, tx pgx.Tx, tenantID st
 	}
 	return nil
 }
+
+func cleanupDepartmentDeleteTx(ctx context.Context, tx pgx.Tx, tenantID string, deptID uuid.UUID) error {
+	if err := validateDepartmentExistsTx(ctx, tx, tenantID, deptID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users
+		SET department_id = NULL,
+			role = CASE WHEN role = 'dept_manager' THEN 'employee' ELSE role END,
+			updated_at = NOW()
+		WHERE tenant_id = $1 AND department_id = $2 AND deleted_at IS NULL
+	`, tenantID, deptID); err != nil {
+		return fmt.Errorf("failed to unlink department users: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE departments
+		SET manager_id = NULL, deleted_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+	`, deptID, tenantID); err != nil {
+		return fmt.Errorf("failed to soft delete department: %w", err)
+	}
+	return nil
+}
