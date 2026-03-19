@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,11 @@ import (
 type UserService struct {
 	db *pgxpool.Pool
 }
+
+var (
+	ErrUserNotFound       = errors.New("user not found")
+	ErrAmbiguousLoginUser = errors.New("multiple users found for email")
+)
 
 func NewUserService(db *pgxpool.Pool) *UserService {
 	return &UserService{db: db}
@@ -174,33 +180,12 @@ func buildUserSort(sortBy, sortDir string) string {
 	}
 }
 
-// GetUserByEmail retrieves a user by email (searches across tenants for login)
+// GetUserByEmail retrieves a user by email within a tenant.
 func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*models.User, error) {
-	// If tenantID is empty, search across all tenants (for login)
 	if tenantID == "" {
-		user := &models.User{}
-		err := s.db.QueryRow(ctx, `
-			SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
-				department_id, designation, date_of_joining, shift_start_time, shift_end_time,
-				shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-				last_login_at, created_at, updated_at, deleted_at
-			FROM users
-			WHERE email = $1 AND deleted_at IS NULL
-			LIMIT 1
-		`, email).Scan(
-			&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.PasswordHash, &user.Phone,
-			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
-			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
-			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
-
-		if err != nil {
-			return nil, fmt.Errorf("user not found: %w", err)
-		}
-		return user, nil
+		return nil, fmt.Errorf("tenant id is required: %w", ErrUserNotFound)
 	}
 
-	// Otherwise, search within specific tenant
 	user := &models.User{}
 	err := s.db.QueryRow(ctx, `
 		SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
@@ -217,10 +202,69 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 		&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
 
 	if err != nil {
-		return nil, fmt.Errorf("user not found: %w", err)
+		return nil, fmt.Errorf("%w: %s", ErrUserNotFound, email)
 	}
 
 	return user, nil
+}
+
+// FindLoginUserByEmail resolves a password-login user safely across tenants.
+func (s *UserService) FindLoginUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
+			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
+			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
+			last_login_at, created_at, updated_at, deleted_at
+		FROM users
+		WHERE LOWER(email) = LOWER($1)
+		  AND deleted_at IS NULL
+		ORDER BY created_at ASC
+		LIMIT 2
+	`, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		user := &models.User{}
+		if err := rows.Scan(
+			&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.PasswordHash, &user.Phone,
+			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
+			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
+			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
+			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	switch len(users) {
+	case 0:
+		return nil, fmt.Errorf("%w: %s", ErrUserNotFound, email)
+	case 1:
+		return users[0], nil
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrAmbiguousLoginUser, email)
+	}
+}
+
+// UpdateLastLogin records a successful sign-in timestamp for a user.
+func (s *UserService) UpdateLastLogin(ctx context.Context, tenantID, userID string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE users
+		SET last_login_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+	`, userID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to update last login: %w", err)
+	}
+	return nil
 }
 
 // UpdateUserBasic updates core user fields within a tenant and returns the updated user.

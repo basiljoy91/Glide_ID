@@ -26,7 +26,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 	// Public routes
 	public := app.Group("/api/v1/public")
 	{
-		public.Post("/auth/login", handlers.Login(svc.Auth, svc.User))
+		public.Post("/auth/login", handlers.Login(svc.Auth, svc.User, svc.Audit))
 		public.Post("/auth/sso/initiate", handlers.InitiateSSO(svc.Attendance.GetDB()))
 		public.Post("/auth/sso/callback", handlers.SSOCallback(svc.Auth))
 		public.Post("/onboarding/provision", handlers.ProvisionOrganization(svc.Attendance.GetDB()))

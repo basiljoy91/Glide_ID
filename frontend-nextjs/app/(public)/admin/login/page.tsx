@@ -15,51 +15,13 @@ export default function AdminLoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [authMethod, setAuthMethod] = useState<'sso' | 'password'>('sso')
+  const [authMethod, setAuthMethod] = useState<'sso' | 'password'>('password')
   const { setUser, setToken } = useAuthStore()
 
-  const handleSSOLogin = async () => {
-    if (!email || !email.includes('@')) {
-      toast.error('Please enter a valid corporate email address')
-      return
-    }
-
-    setIsLoading(true)
-    try {
-      // Detect SSO provider from email domain
-      const domain = email.split('@')[1]
-      
-      // Call backend to initiate SSO flow
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/public/auth/sso/initiate`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ email, domain }),
-        }
-      )
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'SSO initiation failed')
-      }
-
-      const data = await response.json()
-      
-      // Redirect to identity provider
-      const redirectUrl = data.redirectUrl || data.redirect_url
-      if (redirectUrl) {
-        window.location.href = redirectUrl
-      } else {
-        toast.error(data.error || data.message || 'SSO configuration not found for this domain')
-      }
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to initiate SSO login')
-    } finally {
-      setIsLoading(false)
-    }
+  const routeForRole = (role: string) => {
+    if (role === 'super_admin') return '/admin/super'
+    if (['org_admin', 'hr', 'dept_manager'].includes(role)) return '/admin/org'
+    return '/dashboard'
   }
 
   const handlePasswordLogin = async (e: React.FormEvent) => {
@@ -102,14 +64,7 @@ export default function AdminLoginPage() {
       })
 
       toast.success('Login successful!')
-      
-      // Redirect based on role
-      if (data.user.role === 'super_admin') {
-        router.push('/admin/super')
-      } else {
-        // Org Admin / HR / Dept Manager / Employee
-        router.push('/admin/org')
-      }
+      router.push(routeForRole(data.user.role))
     } catch (error: any) {
       toast.error(error.message || 'Login failed')
     } finally {
@@ -139,7 +94,7 @@ export default function AdminLoginPage() {
             }`}
           >
             <Shield className="h-4 w-4 inline mr-2" />
-            Enterprise SSO
+            SSO Later
           </button>
           <button
             type="button"
@@ -158,51 +113,13 @@ export default function AdminLoginPage() {
         {/* SSO Login Form */}
         {authMethod === 'sso' && (
           <div className="space-y-4">
-            <div>
-              <Label htmlFor="sso-email">Corporate Email Address</Label>
-              <div className="relative mt-1">
-                <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground" />
-                <Input
-                  id="sso-email"
-                  type="email"
-                  placeholder="admin@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="pl-10"
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter') {
-                      handleSSOLogin()
-                    }
-                  }}
-                />
-              </div>
-              <p className="text-sm text-muted-foreground mt-2">
-                Enter your corporate email to be redirected to your identity provider
-              </p>
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              Enterprise SSO is not enabled yet in this build. Use password login for now.
             </div>
-
-            <Button
-              onClick={handleSSOLogin}
-              disabled={isLoading}
-              className="w-full"
-              size="lg"
-            >
-              {isLoading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-primary-foreground border-t-transparent rounded-full animate-spin mr-2" />
-                  Redirecting...
-                </>
-              ) : (
-                <>
-                  <Shield className="h-4 w-4 mr-2" />
-                  Continue with SSO
-                </>
-              )}
+            <Button type="button" onClick={() => setAuthMethod('password')} className="w-full" size="lg">
+              <Lock className="h-4 w-4 mr-2" />
+              Use Password Login
             </Button>
-
-            <div className="text-center text-sm text-muted-foreground">
-              <p>Supported providers: Okta, Azure AD, Google Workspace, SAML 2.0, OIDC</p>
-            </div>
           </div>
         )}
 
@@ -246,9 +163,7 @@ export default function AdminLoginPage() {
                 <input type="checkbox" className="mr-2" />
                 <span className="text-muted-foreground">Remember me</span>
               </label>
-              <Link href="/admin/forgot-password" className="text-primary hover:underline">
-                Forgot password?
-              </Link>
+              <span className="text-muted-foreground">Password reset is managed by your admin.</span>
             </div>
 
             <Button

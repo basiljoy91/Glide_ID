@@ -12,6 +12,7 @@ import {
   MonitorSmartphone,
   AlertTriangle,
   BarChart3,
+  ShieldCheck,
   LogOut,
   User,
 } from 'lucide-react'
@@ -81,6 +82,12 @@ export function OrgAdminNavbar() {
                 <span>Reports</span>
               </Button>
             </Link>
+            <Link href="/admin/org/audit">
+              <Button variant="ghost" className="flex items-center space-x-2">
+                <ShieldCheck className="h-4 w-4" />
+                <span>Audit</span>
+              </Button>
+            </Link>
           </div>
 
           {/* User Menu + Logout at top-right (spec-compliant) */}
@@ -100,4 +107,3 @@ export function OrgAdminNavbar() {
     </nav>
   )
 }
-

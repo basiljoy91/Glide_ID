@@ -47,7 +47,7 @@ export default function OrgAdminDashboardPage() {
       return
     }
     if (!['org_admin', 'hr', 'dept_manager'].includes(user.role)) {
-      router.push('/admin/login')
+      router.push(user.role === 'employee' ? '/dashboard' : '/admin/login')
       return
     }
     fetchAll()
