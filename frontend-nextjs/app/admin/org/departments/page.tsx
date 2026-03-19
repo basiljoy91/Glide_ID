@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuthStore } from '@/store/useStore'
 import { useRouter } from 'next/navigation'
 import { Input } from '@/components/ui/input'
@@ -27,6 +27,7 @@ interface User {
   last_name: string
   email: string
   role?: string
+  is_active?: boolean
 }
 
 export default function OrgDepartmentsPage() {
@@ -44,6 +45,15 @@ export default function OrgDepartmentsPage() {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [busyDeleteId, setBusyDeleteId] = useState<string | null>(null)
   const [users, setUsers] = useState<User[]>([])
+  const managerCandidates = useMemo(
+    () =>
+      users.filter(
+        (candidate) =>
+          Boolean(candidate.is_active) &&
+          (candidate.role === 'employee' || candidate.role === 'dept_manager')
+      ),
+    [users]
+  )
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -139,6 +149,7 @@ export default function OrgDepartmentsPage() {
       setDescription('')
       setManagerId('')
       await fetchDepartments()
+      await fetchUsers()
     } catch (e: any) {
       toast.error(e.message || 'Failed to create department')
     } finally {
@@ -163,6 +174,7 @@ export default function OrgDepartmentsPage() {
       toast.success('Department deleted')
       setDepartments((prev) => prev.filter((d) => d.id !== id))
       setPendingDeleteId(null)
+      await fetchUsers()
     } catch (e: any) {
       toast.error(e.message || 'Failed to delete department')
     } finally {
@@ -215,6 +227,7 @@ export default function OrgDepartmentsPage() {
       setEditingId(null)
       setEditing({})
       await fetchDepartments()
+      await fetchUsers()
     } catch (e: any) {
       toast.error(e.message || 'Failed to update department')
     }
@@ -296,7 +309,7 @@ export default function OrgDepartmentsPage() {
               className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option value="">-- Unassigned --</option>
-              {users.map((u) => (
+              {managerCandidates.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.first_name} {u.last_name} ({u.email}{u.role ? ` • ${u.role}` : ''})
                 </option>
@@ -363,7 +376,7 @@ export default function OrgDepartmentsPage() {
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <option value="">-- Unassigned --</option>
-                        {users.map((u) => (
+                        {managerCandidates.map((u) => (
                           <option key={u.id} value={u.id}>
                             {u.first_name} {u.last_name}{u.role ? ` • ${u.role}` : ''}
                           </option>
@@ -468,7 +481,7 @@ export default function OrgDepartmentsPage() {
                             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
                           >
                             <option value="">-- Unassigned --</option>
-                            {users.map((u) => (
+                            {managerCandidates.map((u) => (
                               <option key={u.id} value={u.id}>
                                 {u.first_name} {u.last_name}{u.role ? ` • ${u.role}` : ''}
                               </option>

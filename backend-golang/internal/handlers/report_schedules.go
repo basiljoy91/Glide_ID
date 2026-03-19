@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"enterprise-attendance-api/internal/middleware"
@@ -71,19 +72,37 @@ func loadReportSchedule(ctx context.Context, db *pgxpool.Pool, tenantID, id stri
 func ListReportSchedules(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
-		rows, err := db.Query(ctx, `
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
+		query := `
 			SELECT id, report_type, name, frequency, day_of_week, time_of_day, timezone,
 				recipients, filters, is_active, last_sent_at, created_at, updated_at
 			FROM report_schedules
 			WHERE tenant_id = $1
+		`
+		args := []interface{}{tenantID}
+		if scopedDepartmentID != "" {
+			query += ` AND filters->>'department_id' = $2`
+			args = append(args, scopedDepartmentID)
+		}
+		query += `
 			ORDER BY created_at DESC
-		`, tenantID)
+		`
+		rows, err := db.Query(ctx, query, args...)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list schedules"})
 		}
@@ -116,6 +135,8 @@ func ListReportSchedules(db *pgxpool.Pool) fiber.Handler {
 func CreateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
@@ -143,12 +164,26 @@ func CreateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+		if scopedDepartmentID != "" {
+			if requestedDepartmentID := scheduleDepartmentID(body.Filters); requestedDepartmentID != "" && requestedDepartmentID != scopedDepartmentID {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested department is outside your scope"})
+			}
+			body.Filters = scopeScheduleFilters(body.Filters, scopedDepartmentID)
+		}
+
 		var r reportScheduleRow
 		var timeOfDay time.Time
 		var created time.Time
 		var updated time.Time
 		var lastSent *time.Time
-		err := db.QueryRow(ctx, `
+		err = db.QueryRow(ctx, `
 			INSERT INTO report_schedules (tenant_id, report_type, name, frequency, day_of_week, time_of_day, timezone, recipients, filters, is_active, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6::time,$7,$8,$9,$10,NOW())
 			RETURNING id, report_type, name, frequency, day_of_week, time_of_day, timezone, recipients, filters, is_active, last_sent_at, created_at, updated_at
@@ -173,6 +208,8 @@ func CreateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 func UpdateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
@@ -189,8 +226,19 @@ func UpdateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
 		current, err := loadReportSchedule(ctx, db, tenantID, id)
 		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Schedule not found"})
+		}
+		if !scheduleVisibleToDepartment(current.Filters, scopedDepartmentID) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Schedule not found"})
 		}
 
@@ -220,6 +268,12 @@ func UpdateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 		}
 		if body.Filters == nil {
 			body.Filters = current.Filters
+		}
+		if scopedDepartmentID != "" {
+			if requestedDepartmentID := scheduleDepartmentID(body.Filters); requestedDepartmentID != "" && requestedDepartmentID != scopedDepartmentID {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested department is outside your scope"})
+			}
+			body.Filters = scopeScheduleFilters(body.Filters, scopedDepartmentID)
 		}
 		isActive := current.IsActive
 		if body.IsActive != nil {
@@ -259,6 +313,8 @@ func UpdateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 func DeleteReportSchedule(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
@@ -268,6 +324,19 @@ func DeleteReportSchedule(db *pgxpool.Pool) fiber.Handler {
 		}
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+		if scopedDepartmentID != "" {
+			current, err := loadReportSchedule(ctx, db, tenantID, id)
+			if err != nil || !scheduleVisibleToDepartment(current.Filters, scopedDepartmentID) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Schedule not found"})
+			}
+		}
 		if _, err := db.Exec(ctx, `DELETE FROM report_schedules WHERE tenant_id = $1 AND id = $2`, tenantID, id); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete schedule"})
 		}
@@ -279,6 +348,8 @@ func DeleteReportSchedule(db *pgxpool.Pool) fiber.Handler {
 func RunReportSchedule(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
@@ -296,16 +367,23 @@ func RunReportSchedule(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
-		var reportType string
-		err := db.QueryRow(ctx, `SELECT report_type FROM report_schedules WHERE id = $1 AND tenant_id = $2`, id, tenantID).Scan(&reportType)
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
 		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
+		current, err := loadReportSchedule(ctx, db, tenantID, id)
+		if err != nil || !scheduleVisibleToDepartment(current.Filters, scopedDepartmentID) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Schedule not found"})
 		}
 
 		_, err = db.Exec(ctx, `
 			INSERT INTO report_delivery_logs (tenant_id, schedule_id, report_type, status, message)
 			VALUES ($1,$2,$3,'queued',$4)
-		`, tenantID, id, reportType, body.Message)
+		`, tenantID, id, current.ReportType, body.Message)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to log delivery"})
 		}
@@ -320,6 +398,8 @@ func RunReportSchedule(db *pgxpool.Pool) fiber.Handler {
 func ListReportDeliveryLogs(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
@@ -333,6 +413,20 @@ func ListReportDeliveryLogs(db *pgxpool.Pool) fiber.Handler {
 		}
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
+
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+		if scopedDepartmentID != "" {
+			current, err := loadReportSchedule(ctx, db, tenantID, id)
+			if err != nil || !scheduleVisibleToDepartment(current.Filters, scopedDepartmentID) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Schedule not found"})
+			}
+		}
 
 		rows, err := db.Query(ctx, `
 			SELECT id, report_type, status, message, delivered_at

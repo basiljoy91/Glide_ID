@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,6 +33,8 @@ type orgMetricsResponse struct {
 func GetOrgMetrics(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Tenant ID not found",
@@ -40,6 +43,14 @@ func GetOrgMetrics(db *pgxpool.Pool) fiber.Handler {
 
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
+
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
 
 		startStr := strings.TrimSpace(c.Query("start", ""))
 		endStr := strings.TrimSpace(c.Query("end", ""))
@@ -72,100 +83,120 @@ func GetOrgMetrics(db *pgxpool.Pool) fiber.Handler {
 		var rangeAnomalies int
 		var rangeAttendance int
 
-		// Total active employees (not deleted)
-		if err := db.QueryRow(ctx, `
+		employeeArgs := []interface{}{tenantID}
+		employeeWhere := "tenant_id = $1 AND deleted_at IS NULL AND is_active = true"
+		if scopedDepartmentID != "" {
+			employeeWhere += fmt.Sprintf(" AND department_id = $%d", len(employeeArgs)+1)
+			employeeArgs = append(employeeArgs, scopedDepartmentID)
+		}
+		if err := db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT COUNT(*)
 			FROM users
-			WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active = true
-		`, tenantID).Scan(&totalEmployees); err != nil {
+			WHERE %s
+		`, employeeWhere), employeeArgs...).Scan(&totalEmployees); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to count employees",
 			})
 		}
 
-		// Today's check-ins
-		if err := db.QueryRow(ctx, `
+		attendanceArgs := []interface{}{tenantID}
+		attendanceJoin := ""
+		attendanceWhere := "al.tenant_id = $1"
+		if scopedDepartmentID != "" {
+			attendanceJoin = "JOIN users u ON u.id = al.user_id"
+			attendanceWhere += fmt.Sprintf(" AND u.department_id = $%d", len(attendanceArgs)+1)
+			attendanceArgs = append(attendanceArgs, scopedDepartmentID)
+		}
+
+		if err := db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT COUNT(*)
-			FROM attendance_logs
-			WHERE tenant_id = $1
-			  AND punch_time::date = CURRENT_DATE
-		`, tenantID).Scan(&todayCheckIns); err != nil {
+			FROM attendance_logs al
+			%s
+			WHERE %s
+			  AND al.punch_time::date = CURRENT_DATE
+		`, attendanceJoin, attendanceWhere), attendanceArgs...).Scan(&todayCheckIns); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to count today's check-ins",
 			})
 		}
 
-		// Anomalies pending review (anomaly_detected = true)
-		if err := db.QueryRow(ctx, `
+		if err := db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT COUNT(*)
-			FROM attendance_logs
-			WHERE tenant_id = $1
-			  AND anomaly_detected = true
-		`, tenantID).Scan(&anomaliesPending); err != nil {
+			FROM attendance_logs al
+			%s
+			WHERE %s
+			  AND al.anomaly_detected = true
+		`, attendanceJoin, attendanceWhere), attendanceArgs...).Scan(&anomaliesPending); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to count anomalies",
 			})
 		}
 
-		// Active kiosks
-		if err := db.QueryRow(ctx, `
-			SELECT COUNT(*)
-			FROM kiosks
-			WHERE tenant_id = $1
-			  AND status = 'active'
-		`, tenantID).Scan(&activeKiosks); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to count active kiosks",
-			})
+		if scopedDepartmentID == "" {
+			if err := db.QueryRow(ctx, `
+				SELECT COUNT(*)
+				FROM kiosks
+				WHERE tenant_id = $1
+				  AND status = 'active'
+			`, tenantID).Scan(&activeKiosks); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "Failed to count active kiosks",
+				})
+			}
+
+			if err := db.QueryRow(ctx, `
+				SELECT COUNT(*)
+				FROM kiosks
+				WHERE tenant_id = $1
+				  AND status = 'active'
+				  AND (last_heartbeat_at IS NOT NULL AND last_heartbeat_at >= NOW() - INTERVAL '10 minutes')
+			`, tenantID).Scan(&healthyKiosks); err != nil {
+				healthyKiosks = 0
+			}
 		}
 
-		// Healthy kiosks: active with recent heartbeat (last 10 minutes)
-		if err := db.QueryRow(ctx, `
+		if err := db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT COUNT(*)
-			FROM kiosks
-			WHERE tenant_id = $1
-			  AND status = 'active'
-			  AND (last_heartbeat_at IS NOT NULL AND last_heartbeat_at >= NOW() - INTERVAL '10 minutes')
-		`, tenantID).Scan(&healthyKiosks); err != nil {
-			// On error, just treat healthy as 0
-			healthyKiosks = 0
-		}
-
-		// Total attendance logs (for context)
-		if err := db.QueryRow(ctx, `
-			SELECT COUNT(*)
-			FROM attendance_logs
-			WHERE tenant_id = $1
-		`, tenantID).Scan(&totalAttendance); err != nil {
+			FROM attendance_logs al
+			%s
+			WHERE %s
+		`, attendanceJoin, attendanceWhere), attendanceArgs...).Scan(&totalAttendance); err != nil {
 			totalAttendance = 0
 		}
 
 		if hasRange {
 			rangeStartTime := rangeStart
 			rangeEndTime := rangeEnd.Add(24 * time.Hour)
-			if err := db.QueryRow(ctx, `
+			rangeArgs := append([]interface{}{}, attendanceArgs...)
+			rangeArgs = append(rangeArgs, rangeStartTime, rangeEndTime)
+			startArg := len(rangeArgs) - 1
+			endArg := len(rangeArgs)
+			if err := db.QueryRow(ctx, fmt.Sprintf(`
 				SELECT COUNT(*)
-				FROM attendance_logs
-				WHERE tenant_id = $1
-				  AND punch_time >= $2 AND punch_time < $3
-			`, tenantID, rangeStartTime, rangeEndTime).Scan(&rangeCheckIns); err != nil {
+				FROM attendance_logs al
+				%s
+				WHERE %s
+				  AND al.punch_time >= $%d AND al.punch_time < $%d
+			`, attendanceJoin, attendanceWhere, startArg, endArg), rangeArgs...).Scan(&rangeCheckIns); err != nil {
 				rangeCheckIns = 0
 			}
-			if err := db.QueryRow(ctx, `
+			if err := db.QueryRow(ctx, fmt.Sprintf(`
 				SELECT COUNT(*)
-				FROM attendance_logs
-				WHERE tenant_id = $1
-				  AND anomaly_detected = true
-				  AND punch_time >= $2 AND punch_time < $3
-			`, tenantID, rangeStartTime, rangeEndTime).Scan(&rangeAnomalies); err != nil {
+				FROM attendance_logs al
+				%s
+				WHERE %s
+				  AND al.anomaly_detected = true
+				  AND al.punch_time >= $%d AND al.punch_time < $%d
+			`, attendanceJoin, attendanceWhere, startArg, endArg), rangeArgs...).Scan(&rangeAnomalies); err != nil {
 				rangeAnomalies = 0
 			}
-			if err := db.QueryRow(ctx, `
+			if err := db.QueryRow(ctx, fmt.Sprintf(`
 				SELECT COUNT(*)
-				FROM attendance_logs
-				WHERE tenant_id = $1
-				  AND punch_time >= $2 AND punch_time < $3
-			`, tenantID, rangeStartTime, rangeEndTime).Scan(&rangeAttendance); err != nil {
+				FROM attendance_logs al
+				%s
+				WHERE %s
+				  AND al.punch_time >= $%d AND al.punch_time < $%d
+			`, attendanceJoin, attendanceWhere, startArg, endArg), rangeArgs...).Scan(&rangeAttendance); err != nil {
 				rangeAttendance = 0
 			}
 		} else {
@@ -208,6 +239,8 @@ func GetOrgMetrics(db *pgxpool.Pool) fiber.Handler {
 func ExportOrgMetrics(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Tenant ID not found",
@@ -241,6 +274,14 @@ func ExportOrgMetrics(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
 		var totalEmployees int
 		var todayCheckIns int
 		var anomaliesPending int
@@ -251,19 +292,40 @@ func ExportOrgMetrics(db *pgxpool.Pool) fiber.Handler {
 		var rangeAnomalies int
 		var rangeAttendance int
 
-		_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active = true`, tenantID).Scan(&totalEmployees)
-		_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM attendance_logs WHERE tenant_id = $1 AND punch_time::date = CURRENT_DATE`, tenantID).Scan(&todayCheckIns)
-		_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM attendance_logs WHERE tenant_id = $1 AND anomaly_detected = true`, tenantID).Scan(&anomaliesPending)
-		_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM kiosks WHERE tenant_id = $1 AND status = 'active'`, tenantID).Scan(&activeKiosks)
-		_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM kiosks WHERE tenant_id = $1 AND status = 'active' AND (last_heartbeat_at IS NOT NULL AND last_heartbeat_at >= NOW() - INTERVAL '10 minutes')`, tenantID).Scan(&healthyKiosks)
-		_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM attendance_logs WHERE tenant_id = $1`, tenantID).Scan(&totalAttendance)
+		employeeArgs := []interface{}{tenantID}
+		employeeWhere := "tenant_id = $1 AND deleted_at IS NULL AND is_active = true"
+		if scopedDepartmentID != "" {
+			employeeWhere += fmt.Sprintf(" AND department_id = $%d", len(employeeArgs)+1)
+			employeeArgs = append(employeeArgs, scopedDepartmentID)
+		}
+		attendanceArgs := []interface{}{tenantID}
+		attendanceJoin := ""
+		attendanceWhere := "al.tenant_id = $1"
+		if scopedDepartmentID != "" {
+			attendanceJoin = "JOIN users u ON u.id = al.user_id"
+			attendanceWhere += fmt.Sprintf(" AND u.department_id = $%d", len(attendanceArgs)+1)
+			attendanceArgs = append(attendanceArgs, scopedDepartmentID)
+		}
+
+		_ = db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM users WHERE %s`, employeeWhere), employeeArgs...).Scan(&totalEmployees)
+		_ = db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM attendance_logs al %s WHERE %s AND al.punch_time::date = CURRENT_DATE`, attendanceJoin, attendanceWhere), attendanceArgs...).Scan(&todayCheckIns)
+		_ = db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM attendance_logs al %s WHERE %s AND al.anomaly_detected = true`, attendanceJoin, attendanceWhere), attendanceArgs...).Scan(&anomaliesPending)
+		if scopedDepartmentID == "" {
+			_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM kiosks WHERE tenant_id = $1 AND status = 'active'`, tenantID).Scan(&activeKiosks)
+			_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM kiosks WHERE tenant_id = $1 AND status = 'active' AND (last_heartbeat_at IS NOT NULL AND last_heartbeat_at >= NOW() - INTERVAL '10 minutes')`, tenantID).Scan(&healthyKiosks)
+		}
+		_ = db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM attendance_logs al %s WHERE %s`, attendanceJoin, attendanceWhere), attendanceArgs...).Scan(&totalAttendance)
 
 		if hasRange || true {
 			rangeStartTime := rangeStart
 			rangeEndTime := rangeEnd.Add(24 * time.Hour)
-			_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM attendance_logs WHERE tenant_id = $1 AND punch_time >= $2 AND punch_time < $3`, tenantID, rangeStartTime, rangeEndTime).Scan(&rangeCheckIns)
-			_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM attendance_logs WHERE tenant_id = $1 AND anomaly_detected = true AND punch_time >= $2 AND punch_time < $3`, tenantID, rangeStartTime, rangeEndTime).Scan(&rangeAnomalies)
-			_ = db.QueryRow(ctx, `SELECT COUNT(*) FROM attendance_logs WHERE tenant_id = $1 AND punch_time >= $2 AND punch_time < $3`, tenantID, rangeStartTime, rangeEndTime).Scan(&rangeAttendance)
+			rangeArgs := append([]interface{}{}, attendanceArgs...)
+			rangeArgs = append(rangeArgs, rangeStartTime, rangeEndTime)
+			startArg := len(rangeArgs) - 1
+			endArg := len(rangeArgs)
+			_ = db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM attendance_logs al %s WHERE %s AND al.punch_time >= $%d AND al.punch_time < $%d`, attendanceJoin, attendanceWhere, startArg, endArg), rangeArgs...).Scan(&rangeCheckIns)
+			_ = db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM attendance_logs al %s WHERE %s AND al.anomaly_detected = true AND al.punch_time >= $%d AND al.punch_time < $%d`, attendanceJoin, attendanceWhere, startArg, endArg), rangeArgs...).Scan(&rangeAnomalies)
+			_ = db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM attendance_logs al %s WHERE %s AND al.punch_time >= $%d AND al.punch_time < $%d`, attendanceJoin, attendanceWhere, startArg, endArg), rangeArgs...).Scan(&rangeAttendance)
 		}
 
 		offlineKiosks := activeKiosks - healthyKiosks

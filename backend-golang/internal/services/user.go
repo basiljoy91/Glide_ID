@@ -10,6 +10,8 @@ import (
 	"enterprise-attendance-api/internal/models"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,8 +28,29 @@ func NewUserService(db *pgxpool.Pool) *UserService {
 	return &UserService{db: db}
 }
 
+func (s *UserService) GetDB() *pgxpool.Pool {
+	return s.db
+}
+
+func scanUserRow(row pgx.Row, user *models.User) error {
+	return row.Scan(
+		&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.Phone,
+		&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
+		&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
+		&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
+		&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+	)
+}
+
 // CreateUser creates a new user
 func (s *UserService) CreateUser(ctx context.Context, tenantID string, user *models.User) error {
+	return s.CreateUserTx(ctx, s.db, tenantID, user)
+}
+
+// CreateUserTx creates a new user within an existing transaction.
+func (s *UserService) CreateUserTx(ctx context.Context, tx interface {
+	Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error)
+}, tenantID string, user *models.User) error {
 	user.ID = uuid.New()
 	user.TenantID = uuid.MustParse(tenantID)
 	now := time.Now().UTC()
@@ -36,7 +59,7 @@ func (s *UserService) CreateUser(ctx context.Context, tenantID string, user *mod
 	}
 	user.UpdatedAt = now
 
-	_, err := s.db.Exec(ctx, `
+	_, err := tx.Exec(ctx, `
 		INSERT INTO users (
 			id, tenant_id, employee_id, email, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
@@ -54,25 +77,64 @@ func (s *UserService) CreateUser(ctx context.Context, tenantID string, user *mod
 // GetUser retrieves a user by ID
 func (s *UserService) GetUser(ctx context.Context, tenantID, userID string) (*models.User, error) {
 	user := &models.User{}
-	err := s.db.QueryRow(ctx, `
+	err := scanUserRow(s.db.QueryRow(ctx, `
 		SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
 			last_login_at, created_at, updated_at, deleted_at
 		FROM users
 		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
-	`, userID, tenantID).Scan(
-		&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.Phone,
-		&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
-		&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
-		&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-		&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
+	`, userID, tenantID), user)
 
 	if err != nil {
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
 
 	return user, nil
+}
+
+// GetUsersByIDs retrieves multiple users by ID within a tenant.
+func (s *UserService) GetUsersByIDs(ctx context.Context, tenantID string, userIDs []string) ([]*models.User, error) {
+	ids := make([]uuid.UUID, 0, len(userIDs))
+	for _, id := range userIDs {
+		parsed, err := uuid.Parse(id)
+		if err != nil {
+			return nil, fmt.Errorf("invalid user id: %s", id)
+		}
+		ids = append(ids, parsed)
+	}
+	if len(ids) == 0 {
+		return []*models.User{}, nil
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
+			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
+			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
+			last_login_at, created_at, updated_at, deleted_at
+		FROM users
+		WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL
+	`, tenantID, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list users by id: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]*models.User, 0, len(ids))
+	for rows.Next() {
+		user := &models.User{}
+		if err := rows.Scan(
+			&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.Phone,
+			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
+			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
+			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
+			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to read user rows: %w", err)
+		}
+		users = append(users, user)
+	}
+	return users, nil
 }
 
 // ListUsers lists all users for a tenant
@@ -269,8 +331,15 @@ func (s *UserService) UpdateLastLogin(ctx context.Context, tenantID, userID stri
 
 // UpdateUserBasic updates core user fields within a tenant and returns the updated user.
 func (s *UserService) UpdateUserBasic(ctx context.Context, tenantID, userID string, u *models.User) (*models.User, error) {
+	return s.UpdateUserBasicTx(ctx, s.db, tenantID, userID, u)
+}
+
+// UpdateUserBasicTx updates core user fields within a tenant inside a transaction.
+func (s *UserService) UpdateUserBasicTx(ctx context.Context, tx interface {
+	QueryRow(context.Context, string, ...interface{}) pgx.Row
+}, tenantID, userID string, u *models.User) (*models.User, error) {
 	user := &models.User{}
-	err := s.db.QueryRow(ctx, `
+	err := scanUserRow(tx.QueryRow(ctx, `
 		UPDATE users
 		SET
 			email = $1,
@@ -288,12 +357,7 @@ func (s *UserService) UpdateUserBasic(ctx context.Context, tenantID, userID stri
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
 			last_login_at, created_at, updated_at, deleted_at
 	`, u.Email, u.Phone, u.FirstName, u.LastName, u.DepartmentID, u.Designation,
-		u.Role, u.IsActive, userID, tenantID).Scan(
-		&user.ID, &user.TenantID, &user.EmployeeID, &user.Email, &user.Phone,
-		&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
-		&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
-		&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-		&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
+		u.Role, u.IsActive, userID, tenantID), user)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to update user: %w", err)

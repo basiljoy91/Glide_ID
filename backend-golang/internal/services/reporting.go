@@ -53,6 +53,10 @@ func NewReportingService(db *pgxpool.Pool) *ReportingService {
 	return &ReportingService{db: db}
 }
 
+func (s *ReportingService) GetDB() *pgxpool.Pool {
+	return s.db
+}
+
 func (s *ReportingService) LogReportDelivery(ctx context.Context, tenantID, scheduleID, reportType, status, message string) error {
 	var scheduleRef *string
 	if scheduleID != "" {

@@ -63,6 +63,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 		// Attendance
 		attendance := api.Group("/attendance")
+		attendance.Use(middleware.RequireRole("org_admin", "hr", "dept_manager"))
 		{
 			attendance.Get("/", handlers.ListAttendance(svc.Attendance))
 			attendance.Get("/:id", handlers.GetAttendance(svc.Attendance))

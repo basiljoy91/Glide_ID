@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,18 +24,46 @@ type checkinsDay struct {
 func GetCheckins7d(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
-		rows, err := db.Query(ctx, `
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
+		query := `
 			SELECT d::date AS day, COALESCE(COUNT(al.id), 0) AS cnt
 			FROM generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, INTERVAL '1 day') d
 			LEFT JOIN attendance_logs al
 			  ON al.tenant_id = $1
 			 AND al.punch_time::date = d::date
+		`
+		args := []interface{}{tenantID}
+		if scopedDepartmentID != "" {
+			query += `
+			LEFT JOIN users u
+			  ON u.id = al.user_id
+			`
+		}
+		query += `
+			WHERE 1=1
+		`
+		if scopedDepartmentID != "" {
+			query += fmt.Sprintf(" AND (al.id IS NULL OR u.department_id = $%d)", len(args)+1)
+			args = append(args, scopedDepartmentID)
+		}
+		query += `
 			GROUP BY day
 			ORDER BY day ASC
-		`, tenantID)
+		`
+
+		rows, err := db.Query(ctx, query, args...)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch chart data"})
 		}
@@ -76,6 +105,8 @@ type anomalyRow struct {
 func ListAnomalies(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		limit := c.QueryInt("limit", 20)
 		offset := c.QueryInt("offset", 0)
 		startDate := c.Query("start_date")
@@ -110,6 +141,14 @@ func ListAnomalies(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
 		args := []interface{}{tenantID}
 		where := "al.tenant_id = $1"
 		switch state {
@@ -133,6 +172,10 @@ func ListAnomalies(db *pgxpool.Pool) fiber.Handler {
 		if searchQ != "" {
 			where += fmt.Sprintf(" AND (u.employee_id ILIKE $%d OR u.first_name ILIKE $%d OR u.last_name ILIKE $%d)", len(args)+1, len(args)+1, len(args)+1)
 			args = append(args, "%"+searchQ+"%")
+		}
+		if scopedDepartmentID != "" {
+			where += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+			args = append(args, scopedDepartmentID)
 		}
 		args = append(args, limit, offset)
 		limitArg := len(args) - 1
@@ -173,13 +216,32 @@ func ListAnomalies(db *pgxpool.Pool) fiber.Handler {
 func GetAnomaly(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		id := c.Params("id")
 
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
 		var r anomalyRow
-		err := db.QueryRow(ctx, `
+		args := []interface{}{tenantID, id}
+		where := `
+			al.tenant_id = $1
+			  AND al.id = $2
+		`
+		if scopedDepartmentID != "" {
+			where += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+			args = append(args, scopedDepartmentID)
+		}
+		err = db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT
 				al.id, al.punch_time, al.status, al.verification_method, al.anomaly_detected, al.anomaly_reason, al.notes,
 				al.user_id,
@@ -188,9 +250,8 @@ func GetAnomaly(db *pgxpool.Pool) fiber.Handler {
 			FROM attendance_logs al
 			JOIN users u ON u.id = al.user_id
 			LEFT JOIN kiosks k ON k.id = al.kiosk_id
-			WHERE al.tenant_id = $1
-			  AND al.id = $2
-		`, tenantID, id).Scan(
+			WHERE %s
+		`, where), args...).Scan(
 			&r.ID, &r.PunchTime, &r.Status, &r.VerificationMethod, &r.AnomalyDetected, &r.AnomalyReason, &r.Notes,
 			&r.UserID, &r.EmployeeID, &r.FirstName, &r.LastName, &r.KioskCode,
 		)
@@ -206,6 +267,8 @@ func GetAnomaly(db *pgxpool.Pool) fiber.Handler {
 func BulkResolveAnomalies(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		var body struct {
 			IDs  []string `json:"ids"`
 			Note string   `json:"note"`
@@ -220,6 +283,14 @@ func BulkResolveAnomalies(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 7*time.Second)
 		defer cancel()
 
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
 		ids := make([]uuid.UUID, 0, len(body.IDs))
 		for _, id := range body.IDs {
 			p, err := uuid.Parse(id)
@@ -229,7 +300,7 @@ func BulkResolveAnomalies(db *pgxpool.Pool) fiber.Handler {
 			ids = append(ids, p)
 		}
 
-		tag, err := db.Exec(ctx, `
+		query := `
 			UPDATE attendance_logs
 			SET
 				anomaly_detected = false,
@@ -239,9 +310,17 @@ func BulkResolveAnomalies(db *pgxpool.Pool) fiber.Handler {
 					ELSE notes || E'\n' || '[Resolved] ' || $3
 				END,
 				updated_at = NOW()
-			WHERE tenant_id = $1
-			  AND id = ANY($2::uuid[])
-		`, tenantID, ids, body.Note)
+			FROM users u
+			WHERE attendance_logs.tenant_id = $1
+			  AND attendance_logs.id = ANY($2::uuid[])
+			  AND u.id = attendance_logs.user_id
+		`
+		args := []interface{}{tenantID, ids, body.Note}
+		if scopedDepartmentID != "" {
+			query += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+			args = append(args, scopedDepartmentID)
+		}
+		tag, err := db.Exec(ctx, query, args...)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to bulk resolve anomalies"})
 		}
@@ -257,6 +336,8 @@ func BulkResolveAnomalies(db *pgxpool.Pool) fiber.Handler {
 func ResolveAnomaly(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		id := c.Params("id")
 
 		var body struct {
@@ -267,7 +348,15 @@ func ResolveAnomaly(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
-		_, err := db.Exec(ctx, `
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, db, tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
+		query := `
 			UPDATE attendance_logs
 			SET
 				anomaly_detected = false,
@@ -277,10 +366,22 @@ func ResolveAnomaly(db *pgxpool.Pool) fiber.Handler {
 					ELSE notes || E'\n' || '[Resolved] ' || $3
 				END,
 				updated_at = NOW()
-			WHERE id = $1 AND tenant_id = $2
-		`, id, tenantID, body.Note)
+			FROM users u
+			WHERE attendance_logs.id = $1
+			  AND attendance_logs.tenant_id = $2
+			  AND u.id = attendance_logs.user_id
+		`
+		args := []interface{}{id, tenantID, body.Note}
+		if scopedDepartmentID != "" {
+			query += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+			args = append(args, scopedDepartmentID)
+		}
+		tag, err := db.Exec(ctx, query, args...)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve anomaly"})
+		}
+		if tag.RowsAffected() == 0 {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Anomaly not found"})
 		}
 
 		return c.JSON(fiber.Map{"success": true})
@@ -291,6 +392,8 @@ func ResolveAnomaly(db *pgxpool.Pool) fiber.Handler {
 func GetAttendanceReport(reporting *services.ReportingService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 
 		start := c.Query("start_date", time.Now().AddDate(0, 0, -6).Format("2006-01-02"))
 		end := c.Query("end_date", time.Now().Format("2006-01-02"))
@@ -325,6 +428,18 @@ func GetAttendanceReport(reporting *services.ReportingService) fiber.Handler {
 
 		ctx, cancel := context.WithTimeout(c.Context(), 7*time.Second)
 		defer cancel()
+
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, reporting.GetDB(), tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+		departmentID, err = enforceDepartmentScope(departmentID, scopedDepartmentID)
+		if err != nil {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested department is outside your scope"})
+		}
 
 		resp, err := reporting.BuildAttendanceReport(ctx, tenantID, start, end, departmentID, userID, employeeID, strings.ToLower(includeShift) != "false", lateGrace, earlyGrace)
 		if err != nil {

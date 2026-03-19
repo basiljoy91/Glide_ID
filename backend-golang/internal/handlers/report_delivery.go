@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"enterprise-attendance-api/internal/middleware"
@@ -30,6 +31,8 @@ func SendReportNow(reporting *services.ReportingService, email services.EmailSer
 			})
 		}
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
@@ -58,6 +61,18 @@ func SendReportNow(reporting *services.ReportingService, email services.EmailSer
 
 		ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
 		defer cancel()
+
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, reporting.GetDB(), tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+		body.DepartmentID, err = enforceDepartmentScope(body.DepartmentID, scopedDepartmentID)
+		if err != nil {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested department is outside your scope"})
+		}
 
 		pdf, err := reporting.BuildAttendanceReportPDF(ctx, tenantID, start, end, body.DepartmentID, body.UserID, body.EmployeeID, late, early)
 		if err != nil {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -53,6 +54,16 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		// Default role to employee
 		if body.Role == "" {
 			body.Role = "employee"
+		}
+		if body.Role == "dept_manager" && (body.DepartmentID == nil || *body.DepartmentID == "") {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "department_id is required for department managers",
+			})
+		}
+		if body.Role == "dept_manager" && body.IsActive != nil && !*body.IsActive {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Department managers must be active users",
+			})
 		}
 
 		// Enforce RBAC on role assignment
@@ -124,9 +135,34 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		}
 		user.PasswordHash = passwordHash
 
-		if err := userSvc.CreateUser(c.Context(), tenantID, &user); err != nil {
+		tx, err := userSvc.GetDB().Begin(c.Context())
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to start user creation",
+			})
+		}
+		defer tx.Rollback(c.Context())
+
+		if err := userSvc.CreateUserTx(c.Context(), tx, tenantID, &user); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": err.Error(),
+			})
+		}
+		if err := syncUserDepartmentManagerRoleTx(c.Context(), tx, tenantID, user.ID, user.Role, user.DepartmentID); err != nil {
+			switch {
+			case errors.Is(err, errDepartmentManagerNeedsDepartment):
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "department_id is required for department managers"})
+			case errors.Is(err, errInvalidDepartmentManagerCandidate):
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Department managers must be active employee-level users"})
+			case errors.Is(err, errDepartmentNotFound):
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid department_id"})
+			default:
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to link department manager"})
+			}
+		}
+		if err := tx.Commit(c.Context()); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to finalize user creation",
 			})
 		}
 
@@ -219,6 +255,7 @@ func UpdateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		targetUserID := c.Params("id")
 
 		var body models.User
@@ -228,12 +265,50 @@ func UpdateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 			})
 		}
 
-		updated, err := userSvc.UpdateUserBasic(c.Context(), tenantID, targetUserID, &body)
+		currentUser, err := authorizeUserMutation(c.Context(), userSvc, tenantID, actorRole, targetUserID, &body.Role)
+		if err != nil {
+			switch {
+			case errors.Is(err, errRoleMutationForbidden):
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "You cannot modify this user or assign the requested role"})
+			default:
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+			}
+		}
+		if body.Role == "dept_manager" && body.DepartmentID == nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "department_id is required for department managers"})
+		}
+		if body.Role == "dept_manager" && !body.IsActive {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Reassign or demote the department manager before deactivating them"})
+		}
+
+		tx, err := userSvc.GetDB().Begin(c.Context())
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start user update"})
+		}
+		defer tx.Rollback(c.Context())
+
+		updated, err := userSvc.UpdateUserBasicTx(c.Context(), tx, tenantID, targetUserID, &body)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": err.Error(),
 			})
 		}
+		if err := syncUserDepartmentManagerRoleTx(c.Context(), tx, tenantID, updated.ID, updated.Role, updated.DepartmentID); err != nil {
+			switch {
+			case errors.Is(err, errDepartmentManagerNeedsDepartment):
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "department_id is required for department managers"})
+			case errors.Is(err, errInvalidDepartmentManagerCandidate):
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Department managers must be active employee-level users"})
+			case errors.Is(err, errDepartmentNotFound):
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid department_id"})
+			default:
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to sync department manager assignment"})
+			}
+		}
+		if err := tx.Commit(c.Context()); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize user update"})
+		}
+		_ = currentUser
 
 		tenantUUID := uuid.MustParse(tenantID)
 		actorUUID := uuid.MustParse(actorUserID)
@@ -260,7 +335,17 @@ func DeleteUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		userID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		targetUserID := c.Params("id")
+
+		if _, err := authorizeUserMutation(c.Context(), userSvc, tenantID, actorRole, targetUserID, nil); err != nil {
+			switch {
+			case errors.Is(err, errRoleMutationForbidden):
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "You cannot delete this user"})
+			default:
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+			}
+		}
 
 		// Soft delete user
 		if err := userSvc.SoftDeleteUser(c.Context(), tenantID, targetUserID); err != nil {
@@ -364,7 +449,17 @@ func ResetUserPassword(userSvc *services.UserService, auditSvc *services.AuditSe
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		targetUserID := c.Params("id")
+
+		if _, err := authorizeUserMutation(c.Context(), userSvc, tenantID, actorRole, targetUserID, nil); err != nil {
+			switch {
+			case errors.Is(err, errRoleMutationForbidden):
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "You cannot reset this user's password"})
+			default:
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+			}
+		}
 
 		tempPassword, err := generateTempPassword(12)
 		if err != nil {
@@ -498,6 +593,12 @@ func BulkImportUsers(userSvc *services.UserService, auditSvc *services.AuditServ
 				failed++
 				continue
 			}
+			if role == "dept_manager" && (r.DepartmentID == nil || strings.TrimSpace(*r.DepartmentID) == "") {
+				errMsg := "department_id is required for department manager users"
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errMsg})
+				failed++
+				continue
+			}
 
 			authMethod := "password"
 			if r.AuthMethod != nil && *r.AuthMethod != "" {
@@ -556,8 +657,37 @@ func BulkImportUsers(userSvc *services.UserService, auditSvc *services.AuditServ
 				}
 			}
 
-			if err := userSvc.CreateUser(c.Context(), tenantID, &u); err != nil {
+			tx, err := userSvc.GetDB().Begin(c.Context())
+			if err != nil {
+				errText := "failed to start user import transaction"
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errText})
+				failed++
+				continue
+			}
+
+			if err := userSvc.CreateUserTx(c.Context(), tx, tenantID, &u); err != nil {
+				_ = tx.Rollback(c.Context())
 				errText := err.Error()
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errText})
+				failed++
+				continue
+			}
+			if err := syncUserDepartmentManagerRoleTx(c.Context(), tx, tenantID, u.ID, u.Role, u.DepartmentID); err != nil {
+				_ = tx.Rollback(c.Context())
+				errText := err.Error()
+				if errors.Is(err, errDepartmentManagerNeedsDepartment) {
+					errText = "department_id is required for department manager users"
+				} else if errors.Is(err, errInvalidDepartmentManagerCandidate) {
+					errText = "department managers must be active employee-level users"
+				} else if errors.Is(err, errDepartmentNotFound) {
+					errText = "invalid department_id"
+				}
+				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errText})
+				failed++
+				continue
+			}
+			if err := tx.Commit(c.Context()); err != nil {
+				errText := "failed to finalize user import"
 				results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errText})
 				failed++
 				continue
@@ -599,6 +729,7 @@ func BulkUserAction(userSvc *services.UserService, auditSvc *services.AuditServi
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 
 		var body struct {
 			UserIDs []string `json:"user_ids"`
@@ -608,6 +739,17 @@ func BulkUserAction(userSvc *services.UserService, auditSvc *services.AuditServi
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "user_ids and action are required",
 			})
+		}
+
+		if err := authorizeBulkUserMutation(c.Context(), userSvc, tenantID, actorRole, body.UserIDs); err != nil {
+			switch {
+			case errors.Is(err, errRoleMutationForbidden):
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "You cannot modify one or more selected users"})
+			case errors.Is(err, services.ErrUserNotFound):
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "One or more users were not found"})
+			default:
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			}
 		}
 
 		action := strings.ToLower(strings.TrimSpace(body.Action))

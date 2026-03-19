@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -49,6 +50,8 @@ func CheckIn(svc *services.AttendanceService) fiber.Handler {
 func ListAttendance(svc *services.AttendanceService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Tenant ID not found",
@@ -77,6 +80,14 @@ func ListAttendance(svc *services.AttendanceService) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 7*time.Second)
 		defer cancel()
 
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, svc.GetDB(), tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
+
 		args := []interface{}{tenantID, startDate, endDate}
 		where := `
 			al.tenant_id = $1
@@ -90,6 +101,10 @@ func ListAttendance(svc *services.AttendanceService) fiber.Handler {
 		if userID != "" {
 			where += fmt.Sprintf(" AND al.user_id = $%d", len(args)+1)
 			args = append(args, userID)
+		}
+		if scopedDepartmentID != "" {
+			where += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+			args = append(args, scopedDepartmentID)
 		}
 		args = append(args, limit, offset)
 		limitArg := len(args) - 1
@@ -156,6 +171,8 @@ func ListAttendance(svc *services.AttendanceService) fiber.Handler {
 func GetAttendance(svc *services.AttendanceService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
+		actorUserID := middleware.GetUserID(c)
+		actorRole := middleware.GetRole(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
@@ -166,6 +183,14 @@ func GetAttendance(svc *services.AttendanceService) fiber.Handler {
 
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
+
+		scopedDepartmentID, err := resolveManagedDepartmentID(ctx, svc.GetDB(), tenantID, actorUserID, actorRole)
+		if err != nil {
+			if errors.Is(err, errDepartmentScopeRequired) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+		}
 
 		var row struct {
 			ID                 string  `json:"id"`
@@ -185,7 +210,16 @@ func GetAttendance(svc *services.AttendanceService) fiber.Handler {
 		}
 		var punchTime time.Time
 		var localTime *time.Time
-		err := svc.GetDB().QueryRow(ctx, `
+		args := []interface{}{id, tenantID}
+		where := `
+			al.id = $1 AND al.tenant_id = $2
+		`
+		if scopedDepartmentID != "" {
+			where += fmt.Sprintf(" AND u.department_id = $%d", len(args)+1)
+			args = append(args, scopedDepartmentID)
+		}
+
+		err = svc.GetDB().QueryRow(ctx, fmt.Sprintf(`
 			SELECT
 				al.id, al.user_id, u.employee_id, u.first_name, u.last_name,
 				al.status, al.punch_time, al.local_time, al.monotonic_offset_ms,
@@ -194,9 +228,9 @@ func GetAttendance(svc *services.AttendanceService) fiber.Handler {
 			FROM attendance_logs al
 			JOIN users u ON u.id = al.user_id
 			LEFT JOIN kiosks k ON k.id = al.kiosk_id
-			WHERE al.id = $1 AND al.tenant_id = $2
+			WHERE %s
 			LIMIT 1
-		`, id, tenantID).Scan(
+		`, where), args...).Scan(
 			&row.ID, &row.UserID, &row.EmployeeID, &row.FirstName, &row.LastName,
 			&row.Status, &punchTime, &localTime, &row.MonotonicOffsetMs,
 			&row.VerificationMethod, &row.PinUsed, &row.AnomalyDetected, &row.AnomalyReason,
@@ -238,6 +272,8 @@ func ExportReport(svc *services.AttendanceService) fiber.Handler {
 
 func exportAttendanceCSV(c *fiber.Ctx, svc *services.AttendanceService, filePrefix string) error {
 	tenantID := middleware.GetTenantID(c)
+	actorUserID := middleware.GetUserID(c)
+	actorRole := middleware.GetRole(c)
 	if tenantID == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 	}
@@ -257,6 +293,18 @@ func exportAttendanceCSV(c *fiber.Ctx, svc *services.AttendanceService, filePref
 
 	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
 	defer cancel()
+
+	scopedDepartmentID, err := resolveManagedDepartmentID(ctx, svc.GetDB(), tenantID, actorUserID, actorRole)
+	if err != nil {
+		if errors.Is(err, errDepartmentScopeRequired) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Department manager is not assigned to a department"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve access scope"})
+	}
+	departmentID, err = enforceDepartmentScope(departmentID, scopedDepartmentID)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested department is outside your scope"})
+	}
 
 	args := []interface{}{tenantID, startDate, endDate}
 	where := `
