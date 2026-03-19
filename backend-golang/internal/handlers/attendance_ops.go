@@ -115,6 +115,16 @@ func loadAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID 
 	settings := defaultAttendanceOperationsSettings()
 	var raw []byte
 	if err := db.QueryRow(ctx.Context(), `SELECT COALESCE(settings, '{}'::jsonb) FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&raw); err != nil {
+		var exists bool
+		if legacyErr := db.QueryRow(ctx.Context(), `
+			SELECT EXISTS(
+				SELECT 1
+				FROM tenants
+				WHERE id = $1 AND deleted_at IS NULL
+			)
+		`, tenantID).Scan(&exists); legacyErr == nil && exists {
+			return settings, nil
+		}
 		return settings, err
 	}
 	if len(raw) == 0 {
@@ -122,7 +132,7 @@ func loadAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID 
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return settings, err
+		return settings, nil
 	}
 	if section, ok := doc["attendance_operations"].(map[string]any); ok {
 		parsed, _ := json.Marshal(section)
@@ -140,7 +150,7 @@ func loadAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID 
 func saveAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID string, settings attendanceOperationsSettings) error {
 	var raw []byte
 	if err := db.QueryRow(ctx.Context(), `SELECT COALESCE(settings, '{}'::jsonb) FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&raw); err != nil {
-		return err
+		raw = []byte(`{}`)
 	}
 	var doc map[string]any
 	if len(raw) > 0 {

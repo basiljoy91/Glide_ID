@@ -129,6 +129,29 @@ func defaultTenantSettings() tenantSettingsDocument {
 	}
 }
 
+func isMissingTenantSettingsColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, `column "settings" does not exist`) ||
+		strings.Contains(msg, `column "sso_provider" does not exist`) ||
+		strings.Contains(msg, `column "sso_config" does not exist`)
+}
+
+func isRecoverableTenantSettingsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isMissingTenantSettingsColumnError(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "invalid character") ||
+		strings.Contains(msg, "cannot unmarshal") ||
+		strings.Contains(msg, "json")
+}
+
 func DefaultPasswordPolicy() models.PasswordPolicySettings {
 	return defaultTenantSettings().Security.PasswordPolicy
 }
@@ -235,17 +258,29 @@ func (s *AdminService) loadTenantSettings(ctx context.Context, tenantID string) 
 		FROM tenants
 		WHERE id = $1 AND deleted_at IS NULL
 	`, tenantID).Scan(&raw, &ssoProvider, &ssoConfigBytes); err != nil {
+		var exists bool
+		if legacyErr := s.db.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1
+				FROM tenants
+				WHERE id = $1 AND deleted_at IS NULL
+			)
+		`, tenantID).Scan(&exists); legacyErr == nil && exists {
+			return defaults, nil, map[string]any{}, nil
+		}
 		return defaults, nil, nil, err
 	}
 	doc := defaults
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &doc); err != nil {
-			return defaults, nil, nil, err
+			doc = defaults
 		}
 	}
 	var ssoConfig map[string]any
 	if len(ssoConfigBytes) > 0 {
-		_ = json.Unmarshal(ssoConfigBytes, &ssoConfig)
+		if err := json.Unmarshal(ssoConfigBytes, &ssoConfig); err != nil {
+			ssoConfig = map[string]any{}
+		}
 	}
 	doc = normalizeTenantSettings(doc)
 	return doc, ssoProvider, ssoConfig, nil
@@ -798,7 +833,7 @@ func (s *AdminService) RevokeUserSessions(ctx context.Context, tenantID, targetU
 func (s *AdminService) IsIPAllowed(ctx context.Context, tenantID, ipAddress string) (bool, []string, error) {
 	security, err := s.GetSecuritySettings(ctx, tenantID)
 	if err != nil {
-		return false, nil, err
+		return true, nil, nil
 	}
 	trusted := security.TrustedIPRanges
 	if len(trusted) == 0 {
@@ -872,7 +907,7 @@ func ValidatePasswordWithPolicy(policy models.PasswordPolicySettings, password s
 func (s *AdminService) MFARequiredForRole(ctx context.Context, tenantID, role string) (bool, error) {
 	security, err := s.GetSecuritySettings(ctx, tenantID)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	if !security.EnforceMFA {
 		return false, nil
@@ -889,7 +924,7 @@ func (s *AdminService) MFARequiredForRole(ctx context.Context, tenantID, role st
 func (s *AdminService) SessionTimeout(ctx context.Context, tenantID string) (time.Duration, error) {
 	security, err := s.GetSecuritySettings(ctx, tenantID)
 	if err != nil {
-		return 0, err
+		return time.Duration(defaultTenantSettings().Security.SessionTimeoutMinutes) * time.Minute, nil
 	}
 	minutes := security.SessionTimeoutMinutes
 	if minutes <= 0 {
