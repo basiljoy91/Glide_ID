@@ -54,8 +54,16 @@ type ReportSchedule = {
   time_of_day: string
   timezone: string
   recipients: string[]
+  filters?: Record<string, any>
   is_active: boolean
   last_sent_at?: string | null
+}
+
+type ReportDeliveryLog = {
+  id: string
+  status: string
+  message?: string | null
+  delivered_at: string
 }
 
 export default function AttendanceReportPage() {
@@ -80,11 +88,22 @@ export default function AttendanceReportPage() {
   const [departments, setDepartments] = useState<Department[]>([])
 
   const [schedules, setSchedules] = useState<ReportSchedule[]>([])
+  const [scheduleName, setScheduleName] = useState('')
   const [scheduleFrequency, setScheduleFrequency] = useState('weekly')
   const [scheduleDay, setScheduleDay] = useState('1')
   const [scheduleTime, setScheduleTime] = useState('09:00')
   const [scheduleRecipients, setScheduleRecipients] = useState('')
   const [isScheduling, setIsScheduling] = useState(false)
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null)
+  const [editingScheduleName, setEditingScheduleName] = useState('')
+  const [editingScheduleFrequency, setEditingScheduleFrequency] = useState('weekly')
+  const [editingScheduleDay, setEditingScheduleDay] = useState('1')
+  const [editingScheduleTime, setEditingScheduleTime] = useState('09:00')
+  const [editingScheduleRecipients, setEditingScheduleRecipients] = useState('')
+  const [editingScheduleActive, setEditingScheduleActive] = useState(true)
+  const [scheduleLogs, setScheduleLogs] = useState<Record<string, ReportDeliveryLog[]>>({})
+  const [openLogsId, setOpenLogsId] = useState<string | null>(null)
+  const [busyScheduleId, setBusyScheduleId] = useState<string | null>(null)
 
   const [sendRecipients, setSendRecipients] = useState('')
   const [isSendingNow, setIsSendingNow] = useState(false)
@@ -268,6 +287,7 @@ export default function AttendanceReportPage() {
         .filter(Boolean)
       const body = {
         report_type: 'attendance',
+        name: scheduleName.trim() || undefined,
         frequency: scheduleFrequency,
         day_of_week: scheduleFrequency === 'weekly' ? Number(scheduleDay) : undefined,
         time_of_day: scheduleTime,
@@ -290,6 +310,7 @@ export default function AttendanceReportPage() {
         throw new Error(err.error || 'Failed to create schedule')
       }
       toast.success('Schedule created')
+      setScheduleName('')
       setScheduleRecipients('')
       await loadSchedules()
     } catch (e: any) {
@@ -301,6 +322,7 @@ export default function AttendanceReportPage() {
 
   const runSchedule = async (id: string) => {
     try {
+      setBusyScheduleId(id)
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (token) headers.Authorization = `Bearer ${token}`
       const resp = await fetch(`${base}/api/v1/reports/schedules/${id}/run`, {
@@ -316,11 +338,14 @@ export default function AttendanceReportPage() {
       await loadSchedules()
     } catch (e: any) {
       toast.error(e.message || 'Failed to run schedule')
+    } finally {
+      setBusyScheduleId(null)
     }
   }
 
   const deleteSchedule = async (id: string) => {
     try {
+      setBusyScheduleId(id)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
       const resp = await fetch(`${base}/api/v1/reports/schedules/${id}`, {
@@ -335,6 +360,95 @@ export default function AttendanceReportPage() {
       await loadSchedules()
     } catch (e: any) {
       toast.error(e.message || 'Failed to delete schedule')
+    } finally {
+      setBusyScheduleId(null)
+    }
+  }
+
+  const beginEditSchedule = (schedule: ReportSchedule) => {
+    setEditingScheduleId(schedule.id)
+    setEditingScheduleName(schedule.name || '')
+    setEditingScheduleFrequency(schedule.frequency)
+    setEditingScheduleDay(String(schedule.day_of_week ?? 1))
+    setEditingScheduleTime(schedule.time_of_day)
+    setEditingScheduleRecipients(schedule.recipients.join(', '))
+    setEditingScheduleActive(schedule.is_active)
+  }
+
+  const cancelEditSchedule = () => {
+    setEditingScheduleId(null)
+    setEditingScheduleName('')
+    setEditingScheduleFrequency('weekly')
+    setEditingScheduleDay('1')
+    setEditingScheduleTime('09:00')
+    setEditingScheduleRecipients('')
+    setEditingScheduleActive(true)
+  }
+
+  const saveSchedule = async (schedule: ReportSchedule, overrides?: Partial<ReportSchedule>) => {
+    try {
+      setBusyScheduleId(schedule.id)
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
+
+      const nextFrequency = overrides?.frequency || editingScheduleFrequency
+      const recipients = (overrides?.recipients || editingScheduleRecipients.split(','))
+        .map((value) => (typeof value === 'string' ? value.trim() : value))
+        .filter(Boolean)
+
+      const resp = await fetch(`${base}/api/v1/reports/schedules/${schedule.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          report_type: schedule.report_type,
+          name: (overrides?.name as string | undefined) ?? editingScheduleName || null,
+          frequency: nextFrequency,
+          day_of_week:
+            nextFrequency === 'weekly'
+              ? Number((overrides?.day_of_week as number | undefined) ?? editingScheduleDay)
+              : null,
+          time_of_day: (overrides?.time_of_day as string | undefined) ?? editingScheduleTime,
+          timezone: schedule.timezone,
+          recipients,
+          filters: schedule.filters || {},
+          is_active: overrides?.is_active ?? editingScheduleActive,
+        }),
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update schedule')
+      }
+      toast.success('Schedule updated')
+      cancelEditSchedule()
+      await loadSchedules()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update schedule')
+    } finally {
+      setBusyScheduleId(null)
+    }
+  }
+
+  const toggleScheduleLogs = async (scheduleId: string) => {
+    if (openLogsId === scheduleId) {
+      setOpenLogsId(null)
+      return
+    }
+    try {
+      setBusyScheduleId(scheduleId)
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      const resp = await fetch(`${base}/api/v1/reports/schedules/${scheduleId}/logs`, { headers })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to load delivery history')
+      }
+      const data = await resp.json()
+      setScheduleLogs((prev) => ({ ...prev, [scheduleId]: Array.isArray(data) ? data : [] }))
+      setOpenLogsId(scheduleId)
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to load delivery history')
+    } finally {
+      setBusyScheduleId(null)
     }
   }
 
@@ -594,6 +708,10 @@ export default function AttendanceReportPage() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
+            <div className="text-sm font-medium mb-1">Schedule name</div>
+            <Input value={scheduleName} onChange={(e) => setScheduleName(e.target.value)} placeholder="Morning ops summary" />
+          </div>
+          <div>
             <div className="text-sm font-medium mb-1">Frequency</div>
             <select
               value={scheduleFrequency}
@@ -647,23 +765,94 @@ export default function AttendanceReportPage() {
           ) : (
             <div className="divide-y">
               {schedules.map((s) => (
-                <div key={s.id} className="p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                  <div>
-                    <div className="font-medium">{s.report_type.toUpperCase()} report</div>
-                    <div className="text-xs text-muted-foreground">
-                      {s.frequency} at {s.time_of_day} ({s.timezone})
-                      {s.day_of_week !== null && s.day_of_week !== undefined ? ` • Day ${s.day_of_week}` : ''}
+                <div key={s.id} className="p-3 space-y-3">
+                  {editingScheduleId === s.id ? (
+                    <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+                      <Input value={editingScheduleName} onChange={(e) => setEditingScheduleName(e.target.value)} placeholder="Schedule name" />
+                      <select value={editingScheduleFrequency} onChange={(e) => setEditingScheduleFrequency(e.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="monthly">Monthly</option>
+                      </select>
+                      <select value={editingScheduleDay} onChange={(e) => setEditingScheduleDay(e.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm" disabled={editingScheduleFrequency !== 'weekly'}>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                        <option value="0">Sunday</option>
+                      </select>
+                      <Input type="time" value={editingScheduleTime} onChange={(e) => setEditingScheduleTime(e.target.value)} />
+                      <Input value={editingScheduleRecipients} onChange={(e) => setEditingScheduleRecipients(e.target.value)} placeholder="hr@company.com, ops@company.com" className="md:col-span-2" />
+                      <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <input type="checkbox" checked={editingScheduleActive} onChange={(e) => setEditingScheduleActive(e.target.checked)} />
+                        Active
+                      </label>
                     </div>
-                    <div className="text-xs text-muted-foreground">Recipients: {s.recipients.join(', ')}</div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="outline" onClick={() => runSchedule(s.id)}>
-                      Run now
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => deleteSchedule(s.id)}>
-                      Delete
-                    </Button>
-                  </div>
+                  ) : (
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                      <div>
+                        <div className="font-medium">{s.name || `${s.report_type.toUpperCase()} report`}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {s.frequency} at {s.time_of_day} ({s.timezone})
+                          {s.day_of_week !== null && s.day_of_week !== undefined ? ` • Day ${s.day_of_week}` : ''}
+                        </div>
+                        <div className="text-xs text-muted-foreground">Recipients: {s.recipients.join(', ')}</div>
+                        <div className="text-xs text-muted-foreground">
+                          Status: {s.is_active ? 'Active' : 'Paused'}
+                          {s.last_sent_at ? ` • Last sent ${new Date(s.last_sent_at).toLocaleString()}` : ''}
+                        </div>
+                      </div>
+                      <div className="flex gap-2 flex-wrap">
+                        <Button size="sm" variant="outline" onClick={() => beginEditSchedule(s)}>
+                          Edit
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => void saveSchedule(s, { is_active: !s.is_active, recipients: s.recipients, frequency: s.frequency, day_of_week: s.day_of_week ?? undefined, time_of_day: s.time_of_day, name: s.name || undefined })} disabled={busyScheduleId === s.id}>
+                          {s.is_active ? 'Pause' : 'Resume'}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => runSchedule(s.id)} disabled={busyScheduleId === s.id}>
+                          Run now
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => void toggleScheduleLogs(s.id)} disabled={busyScheduleId === s.id}>
+                          {openLogsId === s.id ? 'Hide history' : 'History'}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => deleteSchedule(s.id)} disabled={busyScheduleId === s.id}>
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {editingScheduleId === s.id && (
+                    <div className="flex gap-2 justify-end">
+                      <Button size="sm" onClick={() => void saveSchedule(s)} disabled={busyScheduleId === s.id}>
+                        Save
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={cancelEditSchedule}>
+                        Cancel
+                      </Button>
+                    </div>
+                  )}
+
+                  {openLogsId === s.id && (
+                    <div className="rounded-md border bg-muted/20">
+                      <div className="border-b px-3 py-2 text-sm font-medium text-muted-foreground">Delivery history</div>
+                      {(scheduleLogs[s.id] || []).length === 0 ? (
+                        <div className="p-3 text-sm text-muted-foreground">No delivery history yet.</div>
+                      ) : (
+                        <div className="divide-y">
+                          {(scheduleLogs[s.id] || []).map((log) => (
+                            <div key={log.id} className="p-3 text-sm">
+                              <div className="font-medium">{log.status}</div>
+                              <div className="text-xs text-muted-foreground">{new Date(log.delivered_at).toLocaleString()}</div>
+                              <div className="text-xs text-muted-foreground">{log.message || '—'}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useState } from 'react'
 import { useAuthStore } from '@/store/useStore'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
@@ -14,13 +15,27 @@ import {
   BarChart3,
   ShieldCheck,
   LogOut,
+  Menu,
   User,
+  X,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export function OrgAdminNavbar() {
   const { user, logout } = useAuthStore()
   const router = useRouter()
+  const [isMobileOpen, setIsMobileOpen] = useState(false)
+
+  const navItems = [
+    { href: '/admin/org', label: 'Dashboard', icon: LayoutDashboard },
+    { href: '/admin/org/users', label: 'Employees', icon: Users },
+    { href: '/admin/org/departments', label: 'Departments', icon: Building2 },
+    { href: '/admin/org/integrations', label: 'Integrations', icon: Cable },
+    { href: '/admin/org/kiosks', label: 'Kiosks', icon: MonitorSmartphone },
+    { href: '/admin/org/reviews/anomalies', label: 'Reviews', icon: AlertTriangle },
+    { href: '/admin/org/reports/attendance', label: 'Reports', icon: BarChart3 },
+    { href: '/admin/org/audit', label: 'Audit', icon: ShieldCheck },
+  ]
 
   const handleLogout = () => {
     logout()
@@ -40,58 +55,29 @@ export function OrgAdminNavbar() {
 
           {/* Navigation Links */}
           <div className="hidden md:flex items-center space-x-1">
-            <Link href="/admin/org">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <LayoutDashboard className="h-4 w-4" />
-                <span>Dashboard</span>
-              </Button>
-            </Link>
-            <Link href="/admin/org/users">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <Users className="h-4 w-4" />
-                <span>Employees</span>
-              </Button>
-            </Link>
-            <Link href="/admin/org/departments">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <Building2 className="h-4 w-4" />
-                <span>Departments</span>
-              </Button>
-            </Link>
-            <Link href="/admin/org/integrations">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <Cable className="h-4 w-4" />
-                <span>Integrations</span>
-              </Button>
-            </Link>
-            <Link href="/admin/org/kiosks">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <MonitorSmartphone className="h-4 w-4" />
-                <span>Kiosks</span>
-              </Button>
-            </Link>
-            <Link href="/admin/org/reviews/anomalies">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <AlertTriangle className="h-4 w-4" />
-                <span>Reviews</span>
-              </Button>
-            </Link>
-            <Link href="/admin/org/reports/attendance">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <BarChart3 className="h-4 w-4" />
-                <span>Reports</span>
-              </Button>
-            </Link>
-            <Link href="/admin/org/audit">
-              <Button variant="ghost" className="flex items-center space-x-2">
-                <ShieldCheck className="h-4 w-4" />
-                <span>Audit</span>
-              </Button>
-            </Link>
+            {navItems.map((item) => {
+              const Icon = item.icon
+              return (
+                <Link key={item.href} href={item.href}>
+                  <Button variant="ghost" className="flex items-center space-x-2">
+                    <Icon className="h-4 w-4" />
+                    <span>{item.label}</span>
+                  </Button>
+                </Link>
+              )
+            })}
           </div>
 
           {/* User Menu + Logout at top-right (spec-compliant) */}
           <div className="flex items-center space-x-4">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              onClick={() => setIsMobileOpen((value) => !value)}
+            >
+              {isMobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+            </Button>
             {user && (
               <div className="flex items-center space-x-2 text-sm">
                 <User className="h-4 w-4 text-muted-foreground" />
@@ -103,6 +89,23 @@ export function OrgAdminNavbar() {
             </Button>
           </div>
         </div>
+        {isMobileOpen && (
+          <div className="border-t py-3 md:hidden">
+            <div className="grid gap-2">
+              {navItems.map((item) => {
+                const Icon = item.icon
+                return (
+                  <Link key={item.href} href={item.href} onClick={() => setIsMobileOpen(false)}>
+                    <Button variant="ghost" className="w-full justify-start space-x-2">
+                      <Icon className="h-4 w-4" />
+                      <span>{item.label}</span>
+                    </Button>
+                  </Link>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </nav>
   )

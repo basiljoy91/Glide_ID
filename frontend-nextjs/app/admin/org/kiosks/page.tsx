@@ -17,8 +17,9 @@ interface Kiosk {
 
 interface KioskHistory {
   date: string
-  uptime: string
-  incidents: number
+  activity_count: number
+  anomalies: number
+  last_activity_at?: string | null
 }
 
 const STATUS_OPTIONS = ['all', 'active', 'inactive', 'maintenance', 'revoked'] as const
@@ -248,6 +249,11 @@ export default function OrgKiosksPage() {
     return Date.now() - t <= 10 * 60 * 1000
   }
 
+  const maxActivityCount = historyData.reduce(
+    (max, day) => Math.max(max, day.activity_count),
+    0
+  )
+
   if (!isAuthenticated || !user) return null
 
   return (
@@ -308,28 +314,48 @@ export default function OrgKiosksPage() {
       {historyKioskId && (
         <div className="border rounded-lg bg-card p-4 space-y-4">
           <div className="flex justify-between items-center">
-            <h2 className="font-semibold">Uptime History (Last 7 Days)</h2>
+            <h2 className="font-semibold">Recorded Activity (Last 7 Days)</h2>
             <Button size="sm" variant="ghost" onClick={() => setHistoryKioskId(null)}>Close</Button>
           </div>
           {isLoadingHistory ? (
             <div className="skeleton h-20 w-full" />
           ) : (
-            <div className="flex justify-between items-end gap-2 overflow-x-auto pb-2">
+            <div className="space-y-3">
+              <div className="text-sm text-muted-foreground">
+                This view shows actual attendance activity recorded by the kiosk, not inferred uptime.
+              </div>
+              <div className="flex justify-between items-end gap-2 overflow-x-auto pb-2">
               {historyData.map((day, i) => {
-                const height = parseFloat(day.uptime)
+                const height =
+                  maxActivityCount > 0 ? Math.max(12, Math.round((day.activity_count / maxActivityCount) * 120)) : 12
                 return (
                   <div key={i} className="flex flex-col items-center gap-2 flex-col-reverse group relative">
                     <div className="text-xs text-muted-foreground whitespace-nowrap">{new Date(day.date).toLocaleDateString(undefined, { weekday: 'short' })}</div>
                     <div className="w-10 rounded-t-sm" style={{ 
                       height: `${height}px`, 
-                      backgroundColor: height > 99 ? 'hsl(142.1 76.2% 36.3%)' : height > 95 ? 'hsl(47.9 95.8% 53.1%)' : 'hsl(0 84.2% 60.2%)'
+                      backgroundColor: day.anomalies > 0 ? 'hsl(0 84.2% 60.2%)' : day.activity_count > 0 ? 'hsl(142.1 76.2% 36.3%)' : 'hsl(215.4 16.3% 46.9%)'
                     }} />
-                    <div className="absolute -top-8 bg-popover text-popover-foreground text-xs p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                      {day.uptime}
+                    <div className="absolute -top-16 w-40 bg-popover text-popover-foreground text-xs p-2 rounded opacity-0 group-hover:opacity-100 transition-opacity shadow">
+                      <div>Activity logs: {day.activity_count}</div>
+                      <div>Anomalies: {day.anomalies}</div>
+                      <div>Last activity: {day.last_activity_at ? new Date(day.last_activity_at).toLocaleString() : '—'}</div>
                     </div>
                   </div>
                 )
               })}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {historyData.map((day) => (
+                  <div key={day.date} className="rounded-md border p-3 text-sm">
+                    <div className="font-medium">{new Date(day.date).toLocaleDateString()}</div>
+                    <div className="text-muted-foreground">Activity logs: {day.activity_count}</div>
+                    <div className="text-muted-foreground">Anomalies: {day.anomalies}</div>
+                    <div className="text-muted-foreground">
+                      Last activity: {day.last_activity_at ? new Date(day.last_activity_at).toLocaleString() : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -474,7 +500,7 @@ export default function OrgKiosksPage() {
                             </Button>
                           )}
                           <Button size="sm" variant="outline" onClick={() => viewHistory(k.id)}>
-                            History
+                            Activity
                           </Button>
                         </div>
                   )}
@@ -545,7 +571,7 @@ export default function OrgKiosksPage() {
                         ) : k.status === 'active' && (
                           <div className="flex justify-end gap-2">
                             <Button size="sm" variant="outline" onClick={() => viewHistory(k.id)}>
-                              History
+                              Activity
                             </Button>
                             <Button size="sm" variant="outline" onClick={() => beginEdit(k)}>
                               Edit

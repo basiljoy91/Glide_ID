@@ -149,6 +149,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			reports.Post("/export", handlers.ExportReport(svc.Attendance))
 			reports.Get("/schedules", handlers.ListReportSchedules(svc.Attendance.GetDB()))
 			reports.Post("/schedules", handlers.CreateReportSchedule(svc.Attendance.GetDB()))
+			reports.Put("/schedules/:id", handlers.UpdateReportSchedule(svc.Attendance.GetDB()))
 			reports.Delete("/schedules/:id", handlers.DeleteReportSchedule(svc.Attendance.GetDB()))
 			reports.Post("/schedules/:id/run", handlers.RunReportSchedule(svc.Attendance.GetDB()))
 			reports.Get("/schedules/:id/logs", handlers.ListReportDeliveryLogs(svc.Attendance.GetDB()))

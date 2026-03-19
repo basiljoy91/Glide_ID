@@ -27,6 +27,46 @@ type reportScheduleRow struct {
 	UpdatedAt  string                 `json:"updated_at"`
 }
 
+type reportScheduleBody struct {
+	ReportType string                 `json:"report_type"`
+	Name       *string                `json:"name"`
+	Frequency  string                 `json:"frequency"`
+	DayOfWeek  *int                   `json:"day_of_week"`
+	TimeOfDay  string                 `json:"time_of_day"`
+	Timezone   string                 `json:"timezone"`
+	Recipients []string               `json:"recipients"`
+	Filters    map[string]interface{} `json:"filters"`
+	IsActive   *bool                  `json:"is_active"`
+}
+
+func loadReportSchedule(ctx context.Context, db *pgxpool.Pool, tenantID, id string) (reportScheduleRow, error) {
+	var r reportScheduleRow
+	var timeOfDay time.Time
+	var lastSent *time.Time
+	var created time.Time
+	var updated time.Time
+	err := db.QueryRow(ctx, `
+		SELECT id, report_type, name, frequency, day_of_week, time_of_day, timezone,
+			recipients, filters, is_active, last_sent_at, created_at, updated_at
+		FROM report_schedules
+		WHERE tenant_id = $1 AND id = $2
+	`, tenantID, id).Scan(
+		&r.ID, &r.ReportType, &r.Name, &r.Frequency, &r.DayOfWeek, &timeOfDay, &r.Timezone,
+		&r.Recipients, &r.Filters, &r.IsActive, &lastSent, &created, &updated,
+	)
+	if err != nil {
+		return reportScheduleRow{}, err
+	}
+	r.TimeOfDay = timeOfDay.Format("15:04")
+	r.CreatedAt = created.UTC().Format(time.RFC3339)
+	r.UpdatedAt = updated.UTC().Format(time.RFC3339)
+	if lastSent != nil {
+		s := lastSent.UTC().Format(time.RFC3339)
+		r.LastSentAt = &s
+	}
+	return r, nil
+}
+
 // ListReportSchedules lists report schedules for the tenant.
 func ListReportSchedules(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -79,17 +119,7 @@ func CreateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
-		var body struct {
-			ReportType string                 `json:"report_type"`
-			Name       *string                `json:"name"`
-			Frequency  string                 `json:"frequency"`
-			DayOfWeek  *int                   `json:"day_of_week"`
-			TimeOfDay  string                 `json:"time_of_day"`
-			Timezone   string                 `json:"timezone"`
-			Recipients []string               `json:"recipients"`
-			Filters    map[string]interface{} `json:"filters"`
-			IsActive   *bool                  `json:"is_active"`
-		}
+		var body reportScheduleBody
 		if err := c.BodyParser(&body); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 		}
@@ -136,6 +166,92 @@ func CreateReportSchedule(db *pgxpool.Pool) fiber.Handler {
 			r.LastSentAt = &s
 		}
 		return c.Status(fiber.StatusCreated).JSON(r)
+	}
+}
+
+// UpdateReportSchedule updates an existing schedule, including recipients and active status.
+func UpdateReportSchedule(db *pgxpool.Pool) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := middleware.GetTenantID(c)
+		if tenantID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
+		}
+		id := c.Params("id")
+		if id == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Schedule ID is required"})
+		}
+
+		var body reportScheduleBody
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		current, err := loadReportSchedule(ctx, db, tenantID, id)
+		if err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Schedule not found"})
+		}
+
+		if body.ReportType == "" {
+			body.ReportType = current.ReportType
+		}
+		if body.Name == nil {
+			body.Name = current.Name
+		}
+		if body.Frequency == "" {
+			body.Frequency = current.Frequency
+		}
+		if body.DayOfWeek == nil {
+			body.DayOfWeek = current.DayOfWeek
+		}
+		if body.TimeOfDay == "" {
+			body.TimeOfDay = current.TimeOfDay
+		}
+		if body.Timezone == "" {
+			body.Timezone = current.Timezone
+		}
+		if body.Recipients == nil {
+			body.Recipients = current.Recipients
+		}
+		if len(body.Recipients) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "recipients required"})
+		}
+		if body.Filters == nil {
+			body.Filters = current.Filters
+		}
+		isActive := current.IsActive
+		if body.IsActive != nil {
+			isActive = *body.IsActive
+		}
+
+		updated, err := db.Exec(ctx, `
+			UPDATE report_schedules
+			SET report_type = $1,
+				name = $2,
+				frequency = $3,
+				day_of_week = $4,
+				time_of_day = $5::time,
+				timezone = $6,
+				recipients = $7,
+				filters = $8,
+				is_active = $9,
+				updated_at = NOW()
+			WHERE tenant_id = $10 AND id = $11
+		`, body.ReportType, body.Name, body.Frequency, body.DayOfWeek, body.TimeOfDay, body.Timezone, body.Recipients, body.Filters, isActive, tenantID, id)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Failed to update schedule"})
+		}
+		if updated.RowsAffected() == 0 {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Schedule not found"})
+		}
+
+		schedule, err := loadReportSchedule(ctx, db, tenantID, id)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load updated schedule"})
+		}
+		return c.JSON(schedule)
 	}
 }
 

@@ -274,36 +274,86 @@ func RotateKioskSecret(db *pgxpool.Pool) fiber.Handler {
 	}
 }
 
-// GetKioskHistory returns mock uptime history for a kiosk
+// GetKioskHistory returns recorded kiosk activity history for the last 7 days.
 func GetKioskHistory(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		if tenantID == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Tenant ID not found"})
 		}
-		
-		// Return 7 mock data points representing the past 7 days uptime
-		history := []fiber.Map{}
-		now := time.Now()
-		
-		for i := 6; i >= 0; i-- {
-			day := now.AddDate(0, 0, -i)
-			uptimeStr := "100%"
-			
-			// Add a bit of realistic variance
-			if i == 2 {
-				uptimeStr = "98.5%"
-			} else if i == 5 {
-				uptimeStr = "99.9%"
+
+		kioskID := c.Params("id")
+		if kioskID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Kiosk ID is required"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+
+		var exists bool
+		if err := db.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM kiosks
+				WHERE id = $1 AND tenant_id = $2
+			)
+		`, kioskID, tenantID).Scan(&exists); err != nil || !exists {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Kiosk not found"})
+		}
+
+		rows, err := db.Query(ctx, `
+			WITH days AS (
+				SELECT generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, INTERVAL '1 day')::date AS day
+			),
+			activity AS (
+				SELECT
+					al.punch_time::date AS day,
+					COUNT(*) AS activity_count,
+					COUNT(*) FILTER (WHERE al.anomaly_detected = true) AS anomalies,
+					MAX(al.punch_time) AS last_activity_at
+				FROM attendance_logs al
+				WHERE al.tenant_id = $1
+				  AND al.kiosk_id = $2
+				  AND al.punch_time::date >= CURRENT_DATE - INTERVAL '6 days'
+				GROUP BY al.punch_time::date
+			)
+			SELECT d.day, COALESCE(a.activity_count, 0), COALESCE(a.anomalies, 0), a.last_activity_at
+			FROM days d
+			LEFT JOIN activity a ON a.day = d.day
+			ORDER BY d.day ASC
+		`, tenantID, kioskID)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load kiosk history"})
+		}
+		defer rows.Close()
+
+		history := make([]fiber.Map, 0, 7)
+		for rows.Next() {
+			var day time.Time
+			var activityCount int
+			var anomalies int
+			var lastActivityAt *time.Time
+			if err := rows.Scan(&day, &activityCount, &anomalies, &lastActivityAt); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read kiosk history"})
 			}
-			
+
+			var lastActivityStr *string
+			if lastActivityAt != nil {
+				value := lastActivityAt.UTC().Format(time.RFC3339)
+				lastActivityStr = &value
+			}
+
 			history = append(history, fiber.Map{
-				"date": day.Format("2006-01-02"),
-				"uptime": uptimeStr,
-				"incidents": 0,
+				"date":             day.Format("2006-01-02"),
+				"activity_count":   activityCount,
+				"anomalies":        anomalies,
+				"last_activity_at": lastActivityStr,
 			})
 		}
-		
+		if err := rows.Err(); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize kiosk history"})
+		}
+
 		return c.JSON(history)
 	}
 }
