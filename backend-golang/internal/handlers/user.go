@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/csv"
 	"errors"
@@ -19,7 +20,7 @@ import (
 )
 
 // CreateUser creates a new user
-func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) fiber.Handler {
+func CreateUser(userSvc *services.UserService, adminSvc *services.AdminService, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		userID := middleware.GetUserID(c)
@@ -94,6 +95,11 @@ func CreateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 
 		var passwordHash *string
 		if body.Password != nil && *body.Password != "" {
+			if err := adminSvc.ValidatePasswordPolicy(c.Context(), tenantID, *body.Password); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": err.Error(),
+				})
+			}
 			h, err := bcrypt.GenerateFromPassword([]byte(*body.Password), bcrypt.DefaultCost)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -445,7 +451,7 @@ func ExportUsersCSV(userSvc *services.UserService) fiber.Handler {
 }
 
 // ResetUserPassword generates a temporary password for a user.
-func ResetUserPassword(userSvc *services.UserService, auditSvc *services.AuditService) fiber.Handler {
+func ResetUserPassword(userSvc *services.UserService, adminSvc *services.AdminService, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		actorUserID := middleware.GetUserID(c)
@@ -461,7 +467,7 @@ func ResetUserPassword(userSvc *services.UserService, auditSvc *services.AuditSe
 			}
 		}
 
-		tempPassword, err := generateTempPassword(12)
+		tempPassword, err := generatePolicyCompliantPassword(c.Context(), adminSvc, tenantID, 16)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to generate temporary password",
@@ -518,6 +524,19 @@ func generateTempPassword(length int) (string, error) {
 	return string(out), nil
 }
 
+func generatePolicyCompliantPassword(ctx context.Context, adminSvc *services.AdminService, tenantID string, length int) (string, error) {
+	for attempt := 0; attempt < 10; attempt++ {
+		password, err := generateTempPassword(length)
+		if err != nil {
+			return "", err
+		}
+		if err := adminSvc.ValidatePasswordPolicy(ctx, tenantID, password); err == nil {
+			return password, nil
+		}
+	}
+	return "", errors.New("unable to generate password that satisfies policy")
+}
+
 func stringOrEmpty(v *string) string {
 	if v == nil {
 		return ""
@@ -530,7 +549,7 @@ func stringPtr(s string) *string {
 }
 
 // BulkImportUsers creates users in batch.
-func BulkImportUsers(userSvc *services.UserService, auditSvc *services.AuditService) fiber.Handler {
+func BulkImportUsers(userSvc *services.UserService, adminSvc *services.AdminService, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := middleware.GetTenantID(c)
 		actorUserID := middleware.GetUserID(c)
@@ -617,6 +636,12 @@ func BulkImportUsers(userSvc *services.UserService, auditSvc *services.AuditServ
 
 			var passwordHash *string
 			if r.Password != nil && strings.TrimSpace(*r.Password) != "" {
+				if err := adminSvc.ValidatePasswordPolicy(c.Context(), tenantID, strings.TrimSpace(*r.Password)); err != nil {
+					errMsg := err.Error()
+					results = append(results, rowResult{Row: rowNum, EmployeeID: &r.EmployeeID, Error: &errMsg})
+					failed++
+					continue
+				}
 				h, err := bcrypt.GenerateFromPassword([]byte(*r.Password), bcrypt.DefaultCost)
 				if err != nil {
 					errMsg := "failed to hash password"

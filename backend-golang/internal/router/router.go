@@ -11,6 +11,7 @@ import (
 
 type Services struct {
 	Auth       *services.AuthService
+	Admin      *services.AdminService
 	Attendance *services.AttendanceService
 	User       *services.UserService
 	HRMS       *services.HRMSService
@@ -26,7 +27,8 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 	// Public routes
 	public := app.Group("/api/v1/public")
 	{
-		public.Post("/auth/login", handlers.Login(svc.Auth, svc.User, svc.Audit))
+		public.Post("/auth/login", handlers.Login(svc.Auth, svc.User, svc.Admin, svc.Audit, svc.Email))
+		public.Post("/auth/mfa/verify", handlers.VerifyMFALogin(svc.Auth, svc.User, svc.Admin, svc.Audit))
 		public.Post("/auth/sso/initiate", handlers.InitiateSSO(svc.Attendance.GetDB()))
 		public.Post("/auth/sso/callback", handlers.SSOCallback(svc.Auth))
 		public.Post("/onboarding/provision", handlers.ProvisionOrganization(svc.Attendance.GetDB()))
@@ -45,7 +47,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 	// Protected routes (JWT authenticated)
 	api := app.Group("/api/v1")
-	api.Use(middleware.JWTAuth(cfg.JWTSecret))
+	api.Use(middleware.JWTAuth(cfg.JWTSecret, svc.Auth, svc.Admin))
 	{
 		// Super Admin
 		superAdmin := api.Group("/admin/super")
@@ -63,7 +65,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 		// Attendance
 		attendance := api.Group("/attendance")
-		attendance.Use(middleware.RequireRole("org_admin", "hr", "dept_manager"))
+		attendance.Use(middleware.RequireAccess(services.PermissionAttendanceView, "org_admin", "hr", "dept_manager"))
 		{
 			attendance.Get("/", handlers.ListAttendance(svc.Attendance))
 			attendance.Get("/:id", handlers.GetAttendance(svc.Attendance))
@@ -72,15 +74,15 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 		// Users
 		users := api.Group("/users")
-		users.Use(middleware.RequireRole("org_admin", "hr"))
+		users.Use(middleware.RequireAccess(services.PermissionUsersManage, "org_admin", "hr"))
 		{
 			users.Get("/", handlers.ListUsers(svc.User))
 			users.Get("/export", handlers.ExportUsersCSV(svc.User))
 			users.Get("/:id", handlers.GetUser(svc.User))
-			users.Post("/", handlers.CreateUser(svc.User, svc.Audit))
-			users.Post("/bulk/import", handlers.BulkImportUsers(svc.User, svc.Audit))
+			users.Post("/", handlers.CreateUser(svc.User, svc.Admin, svc.Audit))
+			users.Post("/bulk/import", handlers.BulkImportUsers(svc.User, svc.Admin, svc.Audit))
 			users.Post("/bulk/action", handlers.BulkUserAction(svc.User, svc.Audit))
-			users.Post("/:id/reset-password", handlers.ResetUserPassword(svc.User, svc.Audit))
+			users.Post("/:id/reset-password", handlers.ResetUserPassword(svc.User, svc.Admin, svc.Audit))
 			users.Put("/:id", handlers.UpdateUser(svc.User, svc.Audit))
 			users.Delete("/:id", handlers.DeleteUser(svc.User, svc.Audit))
 			users.Post("/:id/enroll-link", handlers.GenerateEnrollToken(svc.Auth))
@@ -88,7 +90,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 		// Departments
 		departments := api.Group("/departments")
-		departments.Use(middleware.RequireRole("org_admin", "hr"))
+		departments.Use(middleware.RequireAccess(services.PermissionDepartmentsManage, "org_admin", "hr"))
 		{
 			departments.Get("/", handlers.ListDepartments(svc.Attendance.GetDB()))
 			departments.Post("/", handlers.CreateDepartment(svc.Attendance.GetDB()))
@@ -98,7 +100,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 		// Kiosks
 		kiosks := api.Group("/kiosks")
-		kiosks.Use(middleware.RequireRole("org_admin"))
+		kiosks.Use(middleware.RequireAccess(services.PermissionKiosksManage, "org_admin"))
 		{
 			kiosks.Get("/", handlers.ListKiosks(svc.Attendance.GetDB()))
 			kiosks.Post("/", handlers.CreateKiosk(svc.Attendance.GetDB()))
@@ -110,7 +112,7 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 		// HRMS Integration
 		hrms := api.Group("/hrms")
-		hrms.Use(middleware.RequireRole("org_admin", "hr"))
+		hrms.Use(middleware.RequireAccess(services.PermissionIntegrationsManage, "org_admin", "hr"))
 		{
 			hrms.Get("/integrations", handlers.ListHRMSIntegrations(svc.HRMS))
 			hrms.Post("/integrations", handlers.CreateHRMSIntegration(svc.HRMS))
@@ -128,14 +130,14 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 
 		// Audit Logs
 		audit := api.Group("/audit")
-		audit.Use(middleware.RequireRole("org_admin", "hr"))
+		audit.Use(middleware.RequireAccess(services.PermissionAuditView, "org_admin", "hr"))
 		{
 			audit.Get("/", handlers.ListAuditLogs(svc.Audit))
 		}
 
 		// Reports & Exports
 		reports := api.Group("/reports")
-		reports.Use(middleware.RequireRole("org_admin", "hr", "dept_manager"))
+		reports.Use(middleware.RequireAccess(services.PermissionReportsView, "org_admin", "hr", "dept_manager"))
 		{
 			reports.Get("/org-metrics", handlers.GetOrgMetrics(svc.Attendance.GetDB()))
 			reports.Get("/org-metrics/export", handlers.ExportOrgMetrics(svc.Attendance.GetDB()))
@@ -154,6 +156,44 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			reports.Delete("/schedules/:id", handlers.DeleteReportSchedule(svc.Attendance.GetDB()))
 			reports.Post("/schedules/:id/run", handlers.RunReportSchedule(svc.Attendance.GetDB()))
 			reports.Get("/schedules/:id/logs", handlers.ListReportDeliveryLogs(svc.Attendance.GetDB()))
+		}
+
+		settings := api.Group("/org/settings")
+		settings.Use(middleware.RequireAccess(services.PermissionSettingsManage, "org_admin"))
+		{
+			settings.Get("/", handlers.GetOrganizationSettings(svc.Admin))
+			settings.Put("/", handlers.UpdateOrganizationSettings(svc.Admin, svc.Audit))
+			settings.Get("/shifts", handlers.ListShiftTemplates(svc.Admin))
+			settings.Post("/shifts", handlers.UpsertShiftTemplate(svc.Admin, svc.Audit))
+			settings.Put("/shifts/:id", handlers.UpsertShiftTemplate(svc.Admin, svc.Audit))
+			settings.Delete("/shifts/:id", handlers.DeleteShiftTemplate(svc.Admin, svc.Audit))
+		}
+
+		security := api.Group("/org/security")
+		security.Use(middleware.RequireAccess(services.PermissionSecurityManage, "org_admin"))
+		{
+			security.Get("/", handlers.GetSecuritySettings(svc.Admin))
+			security.Put("/", handlers.UpdateSecuritySettings(svc.Admin, svc.Audit))
+			security.Get("/sso", handlers.GetSSOConfiguration(svc.Admin))
+			security.Put("/sso", handlers.UpdateSSOConfiguration(svc.Admin, svc.Audit))
+		}
+
+		access := api.Group("/org/access")
+		access.Use(middleware.RequireAccess(services.PermissionRolesManage, "org_admin"))
+		{
+			access.Get("/roles", handlers.ListCustomRoles(svc.Admin))
+			access.Post("/roles", handlers.CreateCustomRole(svc.Admin, svc.Audit))
+			access.Put("/roles/:id", handlers.UpdateCustomRole(svc.Admin, svc.Audit))
+			access.Delete("/roles/:id", handlers.DeleteCustomRole(svc.Admin, svc.Audit))
+			access.Post("/assignments", handlers.AssignCustomRole(svc.Admin, svc.Audit))
+		}
+
+		sessions := api.Group("/org/sessions")
+		sessions.Use(middleware.RequireAccess(services.PermissionSessionsManage, "org_admin"))
+		{
+			sessions.Get("/", handlers.ListActiveSessions(svc.Admin))
+			sessions.Post("/:id/revoke", handlers.RevokeSession(svc.Admin, svc.Audit))
+			sessions.Post("/revoke-user", handlers.RevokeUserSessions(svc.Admin, svc.Audit))
 		}
 		// Employee Dashboard
 		employee := api.Group("/employee")

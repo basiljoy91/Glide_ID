@@ -14,6 +14,10 @@ export default function AdminLoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [mfaCode, setMfaCode] = useState('')
+  const [challengeId, setChallengeId] = useState<string | null>(null)
+  const [pendingRole, setPendingRole] = useState<string | null>(null)
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [authMethod, setAuthMethod] = useState<'sso' | 'password'>('password')
   const { setUser, setToken } = useAuthStore()
@@ -51,22 +55,69 @@ export default function AdminLoginPage() {
       }
 
       const data = await response.json()
+      if (data.mfa_required) {
+        setChallengeId(data.challenge_id)
+        setPendingRole(data.user?.role || null)
+        setPendingEmail(data.user?.email || email)
+        setMfaCode('')
+        toast.success('Verification code sent')
+        return
+      }
       
-      // Store auth data
-      setToken(data.token)
-      setUser({
-        id: data.user.id,
-        email: data.user.email,
-        firstName: data.user.first_name,
-        lastName: data.user.last_name,
-        role: data.user.role,
-        tenantId: data.user.tenant_id,
-      })
-
-      toast.success('Login successful!')
-      router.push(routeForRole(data.user.role))
+      finalizeLogin(data)
     } catch (error: any) {
       toast.error(error.message || 'Login failed')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const finalizeLogin = (data: any) => {
+    setToken(data.token)
+    setUser({
+      id: data.user.id,
+      email: data.user.email,
+      firstName: data.user.first_name,
+      lastName: data.user.last_name,
+      role: data.user.role,
+      tenantId: data.user.tenant_id,
+      permissions: Array.isArray(data.user.permissions) ? data.user.permissions : [],
+      customRole: data.user.custom_role || null,
+    })
+    setChallengeId(null)
+    setPendingRole(null)
+    setPendingEmail(null)
+    setMfaCode('')
+    toast.success('Login successful!')
+    router.push(routeForRole(data.user.role))
+  }
+
+  const handleVerifyMFA = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!challengeId || !mfaCode.trim()) {
+      toast.error('Enter the verification code')
+      return
+    }
+    setIsLoading(true)
+    try {
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/public/auth/mfa/verify`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ challenge_id: challengeId, code: mfaCode.trim() }),
+        }
+      )
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.error || 'Verification failed')
+      }
+      const data = await response.json()
+      finalizeLogin(data)
+    } catch (error: any) {
+      toast.error(error.message || 'Verification failed')
     } finally {
       setIsLoading(false)
     }
@@ -124,7 +175,7 @@ export default function AdminLoginPage() {
         )}
 
         {/* Password Login Form */}
-        {authMethod === 'password' && (
+        {authMethod === 'password' && !challengeId && (
           <form onSubmit={handlePasswordLogin} className="space-y-4">
             <div>
               <Label htmlFor="password-email">Email Address</Label>
@@ -181,6 +232,48 @@ export default function AdminLoginPage() {
                 'Sign In'
               )}
             </Button>
+          </form>
+        )}
+
+        {authMethod === 'password' && challengeId && (
+          <form onSubmit={handleVerifyMFA} className="space-y-4">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              Enter the verification code sent to {pendingEmail || email}. MFA is required for {pendingRole || 'this role'}.
+            </div>
+
+            <div>
+              <Label htmlFor="mfa-code">Verification Code</Label>
+              <div className="relative mt-1">
+                <Shield className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="mfa-code"
+                  type="text"
+                  placeholder="6-digit code"
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value)}
+                  className="pl-10"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Button type="submit" disabled={isLoading} className="flex-1" size="lg">
+                {isLoading ? 'Verifying...' : 'Verify & Sign In'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setChallengeId(null)
+                  setMfaCode('')
+                  setPendingRole(null)
+                  setPendingEmail(null)
+                }}
+              >
+                Back
+              </Button>
+            </div>
           </form>
         )}
 

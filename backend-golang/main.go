@@ -44,7 +44,8 @@ func main() {
 	}
 
 	// Initialize services
-	authService := services.NewAuthService(cfg.JWTSecret, cfg.JWTExpiry)
+	authService := services.NewAuthService(db.Pool, cfg.JWTSecret, cfg.JWTExpiry)
+	adminService := services.NewAdminService(db.Pool)
 	attendanceService := services.NewAttendanceService(
 		db.Pool,
 		mqttClient,
@@ -98,6 +99,7 @@ func main() {
 	// Setup routes
 	router.SetupRoutes(app, &router.Services{
 		Auth:       authService,
+		Admin:      adminService,
 		Attendance: attendanceService,
 		User:       userService,
 		HRMS:       hrmsService,

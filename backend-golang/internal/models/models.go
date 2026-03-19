@@ -141,3 +141,140 @@ type PayrollExport struct {
 	CreatedAt      time.Time              `json:"created_at"`
 	CompletedAt    *time.Time             `json:"completed_at"`
 }
+
+type CompanyProfileSettings struct {
+	DisplayName  string `json:"display_name"`
+	LegalName    string `json:"legal_name"`
+	BrandColor   string `json:"brand_color"`
+	LogoURL      string `json:"logo_url"`
+	SupportEmail string `json:"support_email"`
+	SupportPhone string `json:"support_phone"`
+}
+
+type Holiday struct {
+	Date string `json:"date"`
+	Name string `json:"name"`
+}
+
+type OperationalSettings struct {
+	Timezone        string    `json:"timezone"`
+	WorkWeek        []string  `json:"work_week"`
+	HolidayCalendar []Holiday `json:"holiday_calendar"`
+}
+
+type AttendancePolicySettings struct {
+	LateGraceMinutes                 int     `json:"late_grace_minutes"`
+	EarlyDepartureGraceMinutes       int     `json:"early_departure_grace_minutes"`
+	BreakGraceMinutes                int     `json:"break_grace_minutes"`
+	AutoCheckoutHours                float64 `json:"auto_checkout_hours"`
+	RegularizationRequiresApproval   bool    `json:"regularization_requires_approval"`
+	AllowManualAttendanceAdjustments bool    `json:"allow_manual_attendance_adjustments"`
+}
+
+type KioskDefaultSettings struct {
+	HeartbeatGraceMinutes  int    `json:"heartbeat_grace_minutes"`
+	OfflineSyncWindowHours int    `json:"offline_sync_window_hours"`
+	RequirePinFallback     bool   `json:"require_pin_fallback"`
+	DefaultLocation        string `json:"default_location"`
+}
+
+type DataRetentionSettings struct {
+	AttendanceLogDays     int `json:"attendance_log_days"`
+	AuditLogDays          int `json:"audit_log_days"`
+	InactiveUserPurgeDays int `json:"inactive_user_purge_days"`
+}
+
+type PasswordPolicySettings struct {
+	MinLength        int  `json:"min_length"`
+	RequireUppercase bool `json:"require_uppercase"`
+	RequireLowercase bool `json:"require_lowercase"`
+	RequireNumber    bool `json:"require_number"`
+	RequireSymbol    bool `json:"require_symbol"`
+	ExpireDays       int  `json:"expire_days"`
+}
+
+type SecuritySettings struct {
+	EnforceMFA            bool                   `json:"enforce_mfa"`
+	RequireMFAForRoles    []string               `json:"require_mfa_for_roles"`
+	PasswordPolicy        PasswordPolicySettings `json:"password_policy"`
+	TrustedIPRanges       []string               `json:"trusted_ip_ranges"`
+	SessionTimeoutMinutes int                    `json:"session_timeout_minutes"`
+	SSOEnabled            bool                   `json:"sso_enabled"`
+}
+
+type ShiftTemplate struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	StartTime    string   `json:"start_time"`
+	EndTime      string   `json:"end_time"`
+	Days         []string `json:"days"`
+	GraceMinutes int      `json:"grace_minutes"`
+	Notes        string   `json:"notes"`
+	IsDefault    bool     `json:"is_default"`
+}
+
+type OrganizationSettings struct {
+	CompanyProfile   CompanyProfileSettings   `json:"company_profile"`
+	Operational      OperationalSettings      `json:"operational"`
+	AttendancePolicy AttendancePolicySettings `json:"attendance_policy"`
+	KioskDefaults    KioskDefaultSettings     `json:"kiosk_defaults"`
+	DataRetention    DataRetentionSettings    `json:"data_retention"`
+	ShiftTemplates   []ShiftTemplate          `json:"shift_templates"`
+}
+
+type SSOConfiguration struct {
+	Enabled  bool           `json:"enabled"`
+	Provider string         `json:"provider"`
+	Config   map[string]any `json:"config"`
+}
+
+type CustomRole struct {
+	ID            uuid.UUID `json:"id"`
+	TenantID      uuid.UUID `json:"tenant_id"`
+	Name          string    `json:"name"`
+	Description   *string   `json:"description"`
+	IsActive      bool      `json:"is_active"`
+	Permissions   []string  `json:"permissions"`
+	AssignedUsers int       `json:"assigned_users"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type CustomRoleUpsert struct {
+	Name        string   `json:"name"`
+	Description *string  `json:"description"`
+	IsActive    bool     `json:"is_active"`
+	Permissions []string `json:"permissions"`
+}
+
+type CustomRoleSummary struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+type CustomRoleAssignment struct {
+	UserID         uuid.UUID `json:"user_id"`
+	FirstName      string    `json:"first_name"`
+	LastName       string    `json:"last_name"`
+	Email          string    `json:"email"`
+	BaseRole       string    `json:"base_role"`
+	CustomRoleID   uuid.UUID `json:"custom_role_id"`
+	CustomRoleName string    `json:"custom_role_name"`
+	AssignedAt     time.Time `json:"assigned_at"`
+}
+
+type AuthSession struct {
+	ID         uuid.UUID  `json:"id"`
+	TenantID   uuid.UUID  `json:"tenant_id"`
+	UserID     uuid.UUID  `json:"user_id"`
+	FirstName  string     `json:"first_name"`
+	LastName   string     `json:"last_name"`
+	Email      string     `json:"email"`
+	Role       string     `json:"role"`
+	IPAddress  *string    `json:"ip_address"`
+	UserAgent  *string    `json:"user_agent"`
+	LastSeenAt time.Time  `json:"last_seen_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	RevokedAt  *time.Time `json:"revoked_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+}

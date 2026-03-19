@@ -9,6 +9,11 @@ interface User {
   lastName: string
   role: string
   tenantId: string
+  permissions?: string[]
+  customRole?: {
+    id: string
+    name: string
+  } | null
 }
 
 interface AuthState {

@@ -14,6 +14,10 @@ import {
   AlertTriangle,
   BarChart3,
   ShieldCheck,
+  Settings,
+  Shield,
+  KeyRound,
+  Laptop,
   LogOut,
   Menu,
   User,
@@ -35,7 +39,15 @@ export function OrgAdminNavbar() {
     { href: '/admin/org/reviews/anomalies', label: 'Reviews', icon: AlertTriangle },
     { href: '/admin/org/reports/attendance', label: 'Reports', icon: BarChart3 },
     { href: '/admin/org/audit', label: 'Audit', icon: ShieldCheck },
-  ]
+    { href: '/admin/org/settings', label: 'Settings', icon: Settings, permission: 'settings.manage' },
+    { href: '/admin/org/security', label: 'Security', icon: Shield, permission: 'security.manage' },
+    { href: '/admin/org/access', label: 'Roles', icon: KeyRound, permission: 'roles.manage' },
+    { href: '/admin/org/sessions', label: 'Sessions', icon: Laptop, permission: 'sessions.manage' },
+  ].filter((item) => {
+    if (!item.permission) return true
+    if (user?.role === 'org_admin') return true
+    return !!user?.permissions?.includes(item.permission)
+  })
 
   const handleLogout = () => {
     logout()

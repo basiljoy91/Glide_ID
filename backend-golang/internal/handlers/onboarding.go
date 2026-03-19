@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"enterprise-attendance-api/internal/services"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -108,6 +110,11 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 		// password hash
 		var passwordHash *string
 		if req.Admin.AuthMethod == "password" {
+			if err := services.ValidatePasswordWithPolicy(services.DefaultPasswordPolicy(), req.Admin.Password); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": err.Error(),
+				})
+			}
 			hash, err := bcrypt.GenerateFromPassword([]byte(req.Admin.Password), bcrypt.DefaultCost)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

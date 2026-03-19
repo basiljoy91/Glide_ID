@@ -12,7 +12,7 @@ import (
 
 func main() {
 	cfg := config.Load()
-	auth := services.NewAuthService(cfg.JWTSecret, 24*time.Hour)
+	auth := services.NewAuthService(nil, cfg.JWTSecret, 24*time.Hour)
 
 	userID := uuid.New().String()
 	tenantID := uuid.New().String()
@@ -24,5 +24,3 @@ func main() {
 
 	fmt.Println(token)
 }
-
-
