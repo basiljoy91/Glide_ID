@@ -88,6 +88,26 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			users.Post("/:id/enroll-link", handlers.GenerateEnrollToken(svc.Auth))
 		}
 
+		workforce := api.Group("/workforce")
+		workforce.Use(middleware.RequireAccess(services.PermissionUsersManage, "org_admin", "hr"))
+		{
+			workforce.Get("/employees/:id/profile", handlers.GetEmployeeProfile(svc.User))
+			workforce.Put("/employees/:id/profile", handlers.UpdateEmployeeProfile(svc.User, svc.Audit))
+			workforce.Get("/employees/:id/emergency-contacts", handlers.ListEmployeeEmergencyContacts(svc.User))
+			workforce.Post("/employees/:id/emergency-contacts", handlers.CreateEmployeeEmergencyContact(svc.User))
+			workforce.Put("/employees/:id/emergency-contacts/:contactId", handlers.UpdateEmployeeEmergencyContact(svc.User))
+			workforce.Delete("/employees/:id/emergency-contacts/:contactId", handlers.DeleteEmployeeEmergencyContact(svc.User))
+			workforce.Get("/employees/:id/documents", handlers.ListEmployeeDocuments(svc.User))
+			workforce.Post("/employees/:id/documents", handlers.CreateEmployeeDocument(svc.User))
+			workforce.Delete("/employees/:id/documents/:documentId", handlers.DeleteEmployeeDocument(svc.User))
+			workforce.Post("/employees/:id/invite/resend", handlers.ResendEmployeeInvite(svc.User, svc.Audit))
+			workforce.Post("/employees/:id/offboard", handlers.OffboardEmployee(svc.User, svc.Admin, svc.Audit))
+			workforce.Get("/bulk-edits", handlers.ListBulkEmployeeEditBatches(svc.Attendance.GetDB()))
+			workforce.Post("/bulk-edits/preview", handlers.PreviewBulkEmployeeEdit(svc.User))
+			workforce.Post("/bulk-edits/:id/apply", handlers.ApplyBulkEmployeeEdit(svc.Attendance.GetDB()))
+			workforce.Post("/bulk-edits/:id/rollback", handlers.RollbackBulkEmployeeEdit(svc.Attendance.GetDB()))
+		}
+
 		// Departments
 		departments := api.Group("/departments")
 		departments.Use(middleware.RequireAccess(services.PermissionDepartmentsManage, "org_admin", "hr"))
@@ -158,6 +178,29 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 			reports.Get("/schedules/:id/logs", handlers.ListReportDeliveryLogs(svc.Attendance.GetDB()))
 		}
 
+		attendanceOps := api.Group("/attendance-ops")
+		attendanceOps.Use(middleware.RequireAccess(services.PermissionReviewsManage, "org_admin", "hr", "dept_manager"))
+		{
+			attendanceOps.Get("/settings", handlers.GetAttendanceOperationsSettings(svc.Attendance.GetDB()))
+			attendanceOps.Put("/settings", handlers.UpdateAttendanceOperationsSettings(svc.Attendance.GetDB()))
+			attendanceOps.Get("/leave-requests", handlers.ListLeaveRequests(svc.Attendance.GetDB(), false))
+			attendanceOps.Post("/leave-requests", handlers.CreateLeaveRequest(svc.Attendance.GetDB(), false))
+			attendanceOps.Patch("/leave-requests/:id/review", handlers.ReviewLeaveRequest(svc.Attendance.GetDB()))
+			attendanceOps.Get("/regularizations", handlers.ListRegularizationRequests(svc.Attendance.GetDB(), false))
+			attendanceOps.Post("/regularizations", handlers.CreateRegularizationRequest(svc.Attendance.GetDB(), false))
+			attendanceOps.Patch("/regularizations/:id/review", handlers.ReviewRegularizationRequest(svc.Attendance.GetDB()))
+			attendanceOps.Get("/overtime-requests", handlers.ListOvertimeRequests(svc.Attendance.GetDB(), false))
+			attendanceOps.Post("/overtime-requests", handlers.CreateOvertimeRequest(svc.Attendance.GetDB(), false))
+			attendanceOps.Patch("/overtime-requests/:id/review", handlers.ReviewOvertimeRequest(svc.Attendance.GetDB()))
+			attendanceOps.Get("/shifts", handlers.ListShiftAssignments(svc.Attendance.GetDB(), false))
+			attendanceOps.Post("/shifts", handlers.CreateShiftAssignment(svc.Attendance.GetDB()))
+			attendanceOps.Put("/shifts/:id", handlers.UpdateShiftAssignment(svc.Attendance.GetDB()))
+			attendanceOps.Delete("/shifts/:id", handlers.DeleteShiftAssignment(svc.Attendance.GetDB()))
+			attendanceOps.Get("/exceptions", handlers.ListAttendanceExceptions(svc.Attendance.GetDB()))
+			attendanceOps.Post("/exceptions", handlers.AssignAttendanceException(svc.Attendance.GetDB()))
+			attendanceOps.Patch("/exceptions/:id", handlers.ResolveAttendanceExceptionAssignment(svc.Attendance.GetDB()))
+		}
+
 		settings := api.Group("/org/settings")
 		settings.Use(middleware.RequireAccess(services.PermissionSettingsManage, "org_admin"))
 		{
@@ -199,6 +242,13 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		employee := api.Group("/employee")
 		{
 			employee.Get("/dashboard", handlers.GetEmployeeDashboard(svc.Attendance.GetDB()))
+			employee.Get("/leave-requests", handlers.ListLeaveRequests(svc.Attendance.GetDB(), true))
+			employee.Post("/leave-requests", handlers.CreateLeaveRequest(svc.Attendance.GetDB(), true))
+			employee.Get("/regularizations", handlers.ListRegularizationRequests(svc.Attendance.GetDB(), true))
+			employee.Post("/regularizations", handlers.CreateRegularizationRequest(svc.Attendance.GetDB(), true))
+			employee.Get("/overtime-requests", handlers.ListOvertimeRequests(svc.Attendance.GetDB(), true))
+			employee.Post("/overtime-requests", handlers.CreateOvertimeRequest(svc.Attendance.GetDB(), true))
+			employee.Get("/shifts", handlers.ListShiftAssignments(svc.Attendance.GetDB(), true))
 		}
 	}
 

@@ -38,7 +38,9 @@ func scanUserRow(row pgx.Row, user *models.User) error {
 		&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 		&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 		&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-		&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+		&user.ConsentDate, &user.LastLoginAt, &user.ManagerID, &user.EmploymentType,
+		&user.WorkLocation, &user.CostCenter, &user.InviteStatus, &user.InviteSentAt,
+		&user.OffboardedAt, &user.OffboardingReason, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
 	)
 }
 
@@ -81,7 +83,8 @@ func (s *UserService) GetUser(ctx context.Context, tenantID, userID string) (*mo
 		SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, created_at, updated_at, deleted_at
+			last_login_at, manager_id, employment_type, work_location, cost_center,
+			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
 		FROM users
 		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
 	`, userID, tenantID), user)
@@ -111,7 +114,8 @@ func (s *UserService) GetUsersByIDs(ctx context.Context, tenantID string, userID
 		SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, created_at, updated_at, deleted_at
+			last_login_at, manager_id, employment_type, work_location, cost_center,
+			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
 		FROM users
 		WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL
 	`, tenantID, ids)
@@ -128,7 +132,9 @@ func (s *UserService) GetUsersByIDs(ctx context.Context, tenantID string, userID
 			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+			&user.ConsentDate, &user.LastLoginAt, &user.ManagerID, &user.EmploymentType,
+			&user.WorkLocation, &user.CostCenter, &user.InviteStatus, &user.InviteSentAt,
+			&user.OffboardedAt, &user.OffboardingReason, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to read user rows: %w", err)
 		}
@@ -174,7 +180,9 @@ func (s *UserService) ListUsers(
 		SELECT u.id, u.tenant_id, u.employee_id, u.email, u.phone, u.first_name, u.last_name,
 			u.department_id, u.designation, u.date_of_joining, u.shift_start_time, u.shift_end_time,
 			u.shift_length_hours, u.role, u.is_active, u.data_privacy_consent, u.consent_date,
-			u.last_login_at, u.created_at, u.updated_at, u.deleted_at,
+			u.last_login_at, u.manager_id, u.employment_type, u.work_location, u.cost_center,
+			u.invite_status, u.invite_sent_at, u.offboarded_at, u.offboarding_reason,
+			u.created_at, u.updated_at, u.deleted_at,
 			al.last_check_in_at
 		FROM users u
 		LEFT JOIN (
@@ -204,7 +212,9 @@ func (s *UserService) ListUsers(
 			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+			&user.ConsentDate, &user.LastLoginAt, &user.ManagerID, &user.EmploymentType,
+			&user.WorkLocation, &user.CostCenter, &user.InviteStatus, &user.InviteSentAt,
+			&user.OffboardedAt, &user.OffboardingReason, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
 			&user.LastCheckInAt); err != nil {
 			return nil, 0, err
 		}
@@ -253,7 +263,8 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 		SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, created_at, updated_at, deleted_at
+			last_login_at, manager_id, employment_type, work_location, cost_center,
+			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
 		FROM users
 		WHERE email = $1 AND tenant_id = $2 AND deleted_at IS NULL
 	`, email, tenantID).Scan(
@@ -261,7 +272,9 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 		&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 		&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 		&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-		&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
+		&user.ConsentDate, &user.LastLoginAt, &user.ManagerID, &user.EmploymentType,
+		&user.WorkLocation, &user.CostCenter, &user.InviteStatus, &user.InviteSentAt,
+		&user.OffboardedAt, &user.OffboardingReason, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt)
 
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrUserNotFound, email)
@@ -276,7 +289,8 @@ func (s *UserService) FindLoginUserByEmail(ctx context.Context, email string) (*
 		SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, created_at, updated_at, deleted_at
+			last_login_at, manager_id, employment_type, work_location, cost_center,
+			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
 		FROM users
 		WHERE LOWER(email) = LOWER($1)
 		  AND deleted_at IS NULL
@@ -296,7 +310,9 @@ func (s *UserService) FindLoginUserByEmail(ctx context.Context, email string) (*
 			&user.FirstName, &user.LastName, &user.DepartmentID, &user.Designation,
 			&user.DateOfJoining, &user.ShiftStartTime, &user.ShiftEndTime,
 			&user.ShiftLengthHours, &user.Role, &user.IsActive, &user.DataPrivacyConsent,
-			&user.ConsentDate, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+			&user.ConsentDate, &user.LastLoginAt, &user.ManagerID, &user.EmploymentType,
+			&user.WorkLocation, &user.CostCenter, &user.InviteStatus, &user.InviteSentAt,
+			&user.OffboardedAt, &user.OffboardingReason, &user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -355,7 +371,8 @@ func (s *UserService) UpdateUserBasicTx(ctx context.Context, tx interface {
 		RETURNING id, tenant_id, employee_id, email, phone, first_name, last_name,
 			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, created_at, updated_at, deleted_at
+			last_login_at, manager_id, employment_type, work_location, cost_center,
+			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
 	`, u.Email, u.Phone, u.FirstName, u.LastName, u.DepartmentID, u.Designation,
 		u.Role, u.IsActive, userID, tenantID), user)
 

@@ -50,15 +50,60 @@ func GetEmployeeDashboard(db *pgxpool.Pool) fiber.Handler {
 		defer cancel()
 
 		var resp EmployeeDashboardResponse
-		// Dummy initialization for shift and leave since we don't have DB tables for them yet
-		resp.UpcomingShift = &UpcomingShift{
-			Title:     "Regular Shift",
-			StartTime: "09:00 AM",
-			EndTime:   "05:00 PM",
-		}
 		resp.LeaveBalance = LeaveBalance{
-			Annual: 12.5,
-			Sick:   4.0,
+			Annual: 18,
+			Sick:   8,
+		}
+
+		var shiftTitle, shiftStart, shiftEnd *string
+		err := db.QueryRow(ctx, `
+			SELECT shift_name, start_time::text, end_time::text
+			FROM shift_assignments
+			WHERE tenant_id = $1
+			  AND user_id = $2
+			  AND deleted_at IS NULL
+			  AND end_date >= CURRENT_DATE
+			ORDER BY start_date ASC, created_at ASC
+			LIMIT 1
+		`, tenantID, userID).Scan(&shiftTitle, &shiftStart, &shiftEnd)
+		if err == nil && shiftTitle != nil && shiftStart != nil && shiftEnd != nil {
+			resp.UpcomingShift = &UpcomingShift{
+				Title:     *shiftTitle,
+				StartTime: *shiftStart,
+				EndTime:   *shiftEnd,
+			}
+		}
+
+		leaveRows, leaveErr := db.Query(ctx, `
+			SELECT leave_type, COALESCE(SUM(day_count), 0)
+			FROM leave_requests
+			WHERE tenant_id = $1
+			  AND user_id = $2
+			  AND status = 'approved'
+			  AND start_date >= date_trunc('year', CURRENT_DATE)::date
+			  AND end_date < (date_trunc('year', CURRENT_DATE) + INTERVAL '1 year')::date
+			GROUP BY leave_type
+		`, tenantID, userID)
+		if leaveErr == nil {
+			for leaveRows.Next() {
+				var leaveType string
+				var used float64
+				if err := leaveRows.Scan(&leaveType, &used); err == nil {
+					switch leaveType {
+					case "annual":
+						resp.LeaveBalance.Annual -= used
+					case "sick":
+						resp.LeaveBalance.Sick -= used
+					}
+				}
+			}
+			leaveRows.Close()
+		}
+		if resp.LeaveBalance.Annual < 0 {
+			resp.LeaveBalance.Annual = 0
+		}
+		if resp.LeaveBalance.Sick < 0 {
+			resp.LeaveBalance.Sick = 0
 		}
 
 		// Fetch today's check-ins (limit to 5 just in case)

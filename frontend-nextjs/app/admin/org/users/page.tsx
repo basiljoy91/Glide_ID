@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuthStore } from '@/store/useStore'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,7 @@ interface UserRow {
   date_of_joining?: string
   last_login_at?: string | null
   last_check_in_at?: string | null
+  invite_status?: string | null
 }
 
 interface Department {
@@ -59,6 +61,18 @@ export default function OrgUsersPage() {
   const [editingUser, setEditingUser] = useState<Partial<UserRow>>({})
   const [selectedRows, setSelectedRows] = useState<Record<string, boolean>>({})
   const [bulkRunning, setBulkRunning] = useState(false)
+  const [bulkPreviewing, setBulkPreviewing] = useState(false)
+  const [bulkApplying, setBulkApplying] = useState(false)
+  const [bulkEdit, setBulkEdit] = useState({
+    department_id: '',
+    employment_type: '',
+    work_location: '',
+    cost_center: '',
+    designation: '',
+    status: '',
+  })
+  const [bulkPreview, setBulkPreview] = useState<any | null>(null)
+  const [bulkBatches, setBulkBatches] = useState<any[]>([])
   const [importing, setImporting] = useState(false)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(25)
@@ -98,6 +112,7 @@ export default function OrgUsersPage() {
     }
     void fetchUsers()
     void fetchDepartments()
+    void loadBulkBatches()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, user?.role])
 
@@ -164,6 +179,19 @@ export default function OrgUsersPage() {
       if (!resp.ok) return
       const data = await resp.json()
       setDepartments(Array.isArray(data) ? data : [])
+    } catch {
+      // best effort
+    }
+  }
+
+  const loadBulkBatches = async () => {
+    try {
+      const resp = await fetch(`${base}/api/v1/workforce/bulk-edits`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!resp.ok) return
+      const data = await resp.json()
+      setBulkBatches(Array.isArray(data) ? data : [])
     } catch {
       // best effort
     }
@@ -400,6 +428,26 @@ export default function OrgUsersPage() {
     }
   }
 
+  const resendInvite = async (userId: string) => {
+    try {
+      const resp = await fetch(`${base}/api/v1/workforce/employees/${userId}/invite/resend`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to resend invite')
+      }
+      if (data.invite_url) {
+        await navigator.clipboard.writeText(data.invite_url)
+      }
+      toast.success('Invite resent and link copied')
+      await fetchUsers()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to resend invite')
+    }
+  }
+
   const selectedUserIds = useMemo(
     () => Object.keys(selectedRows).filter((id) => selectedRows[id]),
     [selectedRows]
@@ -449,6 +497,81 @@ export default function OrgUsersPage() {
       toast.error(e.message || 'Bulk action failed')
     } finally {
       setBulkRunning(false)
+    }
+  }
+
+  const previewBulkEdit = async () => {
+    if (!selectedUserIds.length) {
+      toast.error('Select at least one employee')
+      return
+    }
+    try {
+      setBulkPreviewing(true)
+      const changes: Record<string, any> = {}
+      if (bulkEdit.department_id) changes.department_id = bulkEdit.department_id
+      if (bulkEdit.employment_type) changes.employment_type = bulkEdit.employment_type
+      if (bulkEdit.work_location) changes.work_location = bulkEdit.work_location
+      if (bulkEdit.cost_center) changes.cost_center = bulkEdit.cost_center
+      if (bulkEdit.designation) changes.designation = bulkEdit.designation
+      if (bulkEdit.status === 'active') changes.is_active = true
+      if (bulkEdit.status === 'inactive') changes.is_active = false
+      const resp = await fetch(`${base}/api/v1/workforce/bulk-edits/preview`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ user_ids: selectedUserIds, changes }),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to preview bulk edit')
+      }
+      setBulkPreview(data)
+      toast.success('Bulk edit preview created')
+      await loadBulkBatches()
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to preview bulk edit')
+    } finally {
+      setBulkPreviewing(false)
+    }
+  }
+
+  const applyBulkPreview = async (id: string) => {
+    try {
+      setBulkApplying(true)
+      const resp = await fetch(`${base}/api/v1/workforce/bulk-edits/${id}/apply`, {
+        method: 'POST',
+        headers,
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to apply bulk edit')
+      }
+      toast.success('Bulk edit applied')
+      setBulkPreview(null)
+      await Promise.all([fetchUsers(), loadBulkBatches()])
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to apply bulk edit')
+    } finally {
+      setBulkApplying(false)
+    }
+  }
+
+  const rollbackBulkBatch = async (id: string) => {
+    try {
+      setBulkApplying(true)
+      const resp = await fetch(`${base}/api/v1/workforce/bulk-edits/${id}/rollback`, {
+        method: 'POST',
+        headers,
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        throw new Error(data.error || 'Failed to rollback bulk edit')
+      }
+      toast.success('Bulk edit rolled back')
+      await Promise.all([fetchUsers(), loadBulkBatches()])
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to rollback bulk edit')
+    } finally {
+      setBulkApplying(false)
     }
   }
 
@@ -707,6 +830,83 @@ export default function OrgUsersPage() {
           </div>
         </div>
 
+        <div className="px-4 py-4 border-b space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="font-semibold">Bulk Edit With Preview</div>
+              <div className="text-xs text-muted-foreground">Preview employee metadata changes before applying them, then rollback from the latest batch if needed.</div>
+            </div>
+            <Button onClick={() => void previewBulkEdit()} disabled={bulkPreviewing || !selectedUserIds.length}>
+              {bulkPreviewing ? 'Previewing...' : 'Preview Bulk Edit'}
+            </Button>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
+            <select value={bulkEdit.department_id} onChange={(e) => setBulkEdit((prev) => ({ ...prev, department_id: e.target.value }))} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+              <option value="">Department unchanged</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>{department.name}</option>
+              ))}
+            </select>
+            <select value={bulkEdit.employment_type} onChange={(e) => setBulkEdit((prev) => ({ ...prev, employment_type: e.target.value }))} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+              <option value="">Employment unchanged</option>
+              <option value="full_time">Full time</option>
+              <option value="part_time">Part time</option>
+              <option value="contract">Contract</option>
+              <option value="intern">Intern</option>
+            </select>
+            <Input placeholder="Work location" value={bulkEdit.work_location} onChange={(e) => setBulkEdit((prev) => ({ ...prev, work_location: e.target.value }))} />
+            <Input placeholder="Cost center" value={bulkEdit.cost_center} onChange={(e) => setBulkEdit((prev) => ({ ...prev, cost_center: e.target.value }))} />
+            <Input placeholder="Designation" value={bulkEdit.designation} onChange={(e) => setBulkEdit((prev) => ({ ...prev, designation: e.target.value }))} />
+            <select value={bulkEdit.status} onChange={(e) => setBulkEdit((prev) => ({ ...prev, status: e.target.value }))} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+              <option value="">Status unchanged</option>
+              <option value="active">Set active</option>
+              <option value="inactive">Set inactive</option>
+            </select>
+          </div>
+          {bulkPreview ? (
+            <div className="rounded-md border border-dashed p-4 space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="font-medium">Current preview batch</div>
+                  <div className="text-xs text-muted-foreground">{bulkPreview.items?.length || 0} employees staged</div>
+                </div>
+                <Button onClick={() => void applyBulkPreview(bulkPreview.id)} disabled={bulkApplying}>
+                  {bulkApplying ? 'Applying...' : 'Apply Preview'}
+                </Button>
+              </div>
+              <div className="max-h-48 overflow-auto text-xs text-muted-foreground space-y-2">
+                {(bulkPreview.items || []).slice(0, 8).map((item: any) => (
+                  <div key={item.user_id} className="rounded border p-2">
+                    <div className="font-medium text-foreground">{item.first_name} {item.last_name} · {item.employee_id}</div>
+                    <div>Before: {JSON.stringify(item.before_state)}</div>
+                    <div>After: {JSON.stringify(item.after_state)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {bulkBatches.length > 0 ? (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">Recent bulk edit batches</div>
+              <div className="space-y-2">
+                {bulkBatches.slice(0, 5).map((batch) => (
+                  <div key={batch.id} className="rounded-md border p-3 flex items-center justify-between gap-3">
+                    <div className="text-sm">
+                      <div className="font-medium">{batch.status}</div>
+                      <div className="text-xs text-muted-foreground">{new Date(batch.created_at).toLocaleString()}</div>
+                    </div>
+                    {batch.status === 'applied' ? (
+                      <Button size="sm" variant="outline" disabled={bulkApplying} onClick={() => void rollbackBulkBatch(batch.id)}>
+                        Rollback
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
         {isLoading ? (
           <div className="p-4 space-y-3">
             {Array.from({ length: 5 }).map((_, i) => (
@@ -821,8 +1021,14 @@ export default function OrgUsersPage() {
                           <Button size="sm" variant="outline" onClick={() => beginEdit(u)}>
                             Edit
                           </Button>
+                          <Link href={`/admin/org/users/${u.id}`}>
+                            <Button size="sm" variant="outline">Profile</Button>
+                          </Link>
                           <Button size="sm" variant="outline" onClick={() => void toggleActive(u)}>
                             {u.is_active ? 'Deactivate' : 'Activate'}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => void resendInvite(u.id)}>
+                            Resend invite
                           </Button>
                           <Button size="sm" variant="ghost" onClick={() => void copyEnrollLink(u.id)}>
                             Copy enroll link
@@ -1023,12 +1229,24 @@ export default function OrgUsersPage() {
                                 <Button size="sm" variant="outline" onClick={() => beginEdit(u)}>
                                   Edit
                                 </Button>
+                                <Link href={`/admin/org/users/${u.id}`}>
+                                  <Button size="sm" variant="outline">
+                                    Profile
+                                  </Button>
+                                </Link>
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   onClick={() => void toggleActive(u)}
                                 >
                                   {u.is_active ? 'Deactivate' : 'Activate'}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => void resendInvite(u.id)}
+                                >
+                                  Resend invite
                                 </Button>
                                 <Button
                                   size="sm"

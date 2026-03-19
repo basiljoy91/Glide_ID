@@ -28,6 +28,14 @@ type User struct {
 	ConsentDate        *time.Time `json:"consent_date"`
 	LastLoginAt        *time.Time `json:"last_login_at"`
 	LastCheckInAt      *time.Time `json:"last_check_in_at"`
+	ManagerID          *uuid.UUID `json:"manager_id"`
+	EmploymentType     *string    `json:"employment_type"`
+	WorkLocation       *string    `json:"work_location"`
+	CostCenter         *string    `json:"cost_center"`
+	InviteStatus       string     `json:"invite_status"`
+	InviteSentAt       *time.Time `json:"invite_sent_at"`
+	OffboardedAt       *time.Time `json:"offboarded_at"`
+	OffboardingReason  *string    `json:"offboarding_reason"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	DeletedAt          *time.Time `json:"deleted_at"`
@@ -277,4 +285,114 @@ type AuthSession struct {
 	ExpiresAt  time.Time  `json:"expires_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
 	CreatedAt  time.Time  `json:"created_at"`
+}
+
+type EmergencyContact struct {
+	ID           uuid.UUID `json:"id"`
+	UserID       uuid.UUID `json:"user_id"`
+	Name         string    `json:"name"`
+	Relationship *string   `json:"relationship"`
+	Phone        string    `json:"phone"`
+	Email        *string   `json:"email"`
+	IsPrimary    bool      `json:"is_primary"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type EmployeeDocument struct {
+	ID           uuid.UUID      `json:"id"`
+	TenantID     uuid.UUID      `json:"tenant_id"`
+	UserID       uuid.UUID      `json:"user_id"`
+	DocumentType string         `json:"document_type"`
+	Name         string         `json:"name"`
+	FileURL      string         `json:"file_url"`
+	ExpiresAt    *time.Time     `json:"expires_at"`
+	Metadata     map[string]any `json:"metadata"`
+	UploadedBy   *uuid.UUID     `json:"uploaded_by"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+}
+
+type LeaveRequest struct {
+	ID          uuid.UUID  `json:"id"`
+	TenantID    uuid.UUID  `json:"tenant_id"`
+	UserID      uuid.UUID  `json:"user_id"`
+	LeaveType   string     `json:"leave_type"`
+	StartDate   time.Time  `json:"start_date"`
+	EndDate     time.Time  `json:"end_date"`
+	DayCount    float64    `json:"day_count"`
+	Reason      *string    `json:"reason"`
+	Status      string     `json:"status"`
+	SubmittedAt time.Time  `json:"submitted_at"`
+	ReviewedBy  *uuid.UUID `json:"reviewed_by"`
+	ReviewedAt  *time.Time `json:"reviewed_at"`
+	ReviewNote  *string    `json:"review_note"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+type AttendanceRegularizationRequest struct {
+	ID                 uuid.UUID  `json:"id"`
+	TenantID           uuid.UUID  `json:"tenant_id"`
+	UserID             uuid.UUID  `json:"user_id"`
+	AttendanceLogID    *uuid.UUID `json:"attendance_log_id"`
+	RequestDate        time.Time  `json:"request_date"`
+	RequestedStatus    string     `json:"requested_status"`
+	RequestedPunchTime time.Time  `json:"requested_punch_time"`
+	Reason             string     `json:"reason"`
+	Status             string     `json:"status"`
+	SubmittedAt        time.Time  `json:"submitted_at"`
+	ReviewedBy         *uuid.UUID `json:"reviewed_by"`
+	ReviewedAt         *time.Time `json:"reviewed_at"`
+	ReviewNote         *string    `json:"review_note"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+type OvertimeRequest struct {
+	ID               uuid.UUID  `json:"id"`
+	TenantID         uuid.UUID  `json:"tenant_id"`
+	UserID           uuid.UUID  `json:"user_id"`
+	WorkDate         time.Time  `json:"work_date"`
+	RequestedMinutes int        `json:"requested_minutes"`
+	ApprovedMinutes  int        `json:"approved_minutes"`
+	Reason           *string    `json:"reason"`
+	Status           string     `json:"status"`
+	SubmittedAt      time.Time  `json:"submitted_at"`
+	ReviewedBy       *uuid.UUID `json:"reviewed_by"`
+	ReviewedAt       *time.Time `json:"reviewed_at"`
+	ReviewNote       *string    `json:"review_note"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+type ShiftAssignment struct {
+	ID        uuid.UUID  `json:"id"`
+	TenantID  uuid.UUID  `json:"tenant_id"`
+	UserID    uuid.UUID  `json:"user_id"`
+	ShiftName string     `json:"shift_name"`
+	StartDate time.Time  `json:"start_date"`
+	EndDate   time.Time  `json:"end_date"`
+	StartTime string     `json:"start_time"`
+	EndTime   string     `json:"end_time"`
+	WorkDays  []string   `json:"work_days"`
+	IsRota    bool       `json:"is_rota"`
+	Notes     *string    `json:"notes"`
+	CreatedBy *uuid.UUID `json:"created_by"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+type AttendanceExceptionAssignment struct {
+	ID              uuid.UUID  `json:"id"`
+	TenantID        uuid.UUID  `json:"tenant_id"`
+	AttendanceLogID uuid.UUID  `json:"attendance_log_id"`
+	AssignedTo      uuid.UUID  `json:"assigned_to"`
+	AssignedBy      *uuid.UUID `json:"assigned_by"`
+	SLADueAt        *time.Time `json:"sla_due_at"`
+	Status          string     `json:"status"`
+	Note            *string    `json:"note"`
+	ResolvedAt      *time.Time `json:"resolved_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
