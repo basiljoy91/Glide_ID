@@ -147,7 +147,7 @@ func CreateUser(userSvc *services.UserService, adminSvc *services.AdminService, 
 				"error": "Failed to start user creation",
 			})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 
 		if err := userSvc.CreateUserTx(c.Context(), tx, tenantID, &user); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -291,7 +291,7 @@ func UpdateUser(userSvc *services.UserService, auditSvc *services.AuditService) 
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start user update"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 
 		updated, err := userSvc.UpdateUserBasicTx(c.Context(), tx, tenantID, targetUserID, &body)
 		if err != nil {

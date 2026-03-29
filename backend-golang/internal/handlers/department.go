@@ -115,7 +115,7 @@ func CreateDepartment(db *pgxpool.Pool) fiber.Handler {
 				"error": "Failed to start department creation",
 			})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 
 		var deptID uuid.UUID
 		err = tx.QueryRow(ctx, `
@@ -218,7 +218,7 @@ func UpdateDepartment(db *pgxpool.Pool) fiber.Handler {
 				"error": "Failed to start department update",
 			})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 
 		deptUUID, err := uuid.Parse(deptID)
 		if err != nil {
@@ -303,7 +303,7 @@ func DeleteDepartment(db *pgxpool.Pool) fiber.Handler {
 				"error": "Failed to start department deletion",
 			})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 
 		if err := cleanupDepartmentDeleteTx(ctx, tx, tenantID, deptUUID); err != nil {
 			switch {

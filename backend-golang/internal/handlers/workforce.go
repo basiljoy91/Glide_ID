@@ -439,7 +439,7 @@ func CreateEmployeeEmergencyContact(userSvc *services.UserService) fiber.Handler
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start emergency contact update"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 		if body.IsPrimary {
 			if _, err := tx.Exec(c.Context(), `UPDATE emergency_contacts SET is_primary = false, updated_at = NOW() WHERE user_id = $1`, targetUserID); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update primary contact"})
@@ -486,7 +486,7 @@ func UpdateEmployeeEmergencyContact(userSvc *services.UserService) fiber.Handler
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start emergency contact update"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 		if body.IsPrimary {
 			if _, err := tx.Exec(c.Context(), `UPDATE emergency_contacts SET is_primary = false, updated_at = NOW() WHERE user_id = $1`, targetUserID); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update primary contact"})
@@ -664,7 +664,7 @@ func OffboardEmployee(userSvc *services.UserService, adminSvc *services.AdminSer
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start offboarding"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 		if _, err := tx.Exec(c.Context(), `
 			UPDATE users
 			SET is_active = false,
@@ -821,7 +821,7 @@ func PreviewBulkEmployeeEdit(userSvc *services.UserService) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start bulk edit preview"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 		summary := map[string]any{"user_count": len(users)}
 		summaryJSON, _ := json.Marshal(summary)
 		if _, err := tx.Exec(c.Context(), `INSERT INTO bulk_change_batches (id, tenant_id, created_by, change_type, status, summary) VALUES ($1, $2, $3, 'employee_bulk_edit', 'previewed', $4)`, batchID, tenantID, actorUserID, summaryJSON); err != nil {
@@ -923,7 +923,7 @@ func mutateBulkEditBatchStatus(c *fiber.Ctx, db *pgxpool.Pool, fromStatus string
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "Failed to start bulk edit update")
 	}
-	defer tx.Rollback(c.Context())
+	defer func() { _ = tx.Rollback(c.Context()) }()
 	if err := mutateBulkEditBatchStatusTx(c.Context(), tx, tenantID, batchID, fromStatus, apply); err != nil {
 		switch {
 		case errors.Is(err, errBulkEditBatchNotFound):

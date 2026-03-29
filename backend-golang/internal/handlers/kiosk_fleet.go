@@ -469,7 +469,7 @@ func QueueKioskCommand(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to queue kiosk command"})
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }()
 
 		switch commandType {
 		case "disable":

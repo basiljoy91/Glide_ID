@@ -281,7 +281,7 @@ func CreateReportView(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start report view transaction"})
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }()
 		if body.IsDefault {
 			if _, err := tx.Exec(ctx, `UPDATE report_saved_views SET is_default = false, updated_at = NOW() WHERE tenant_id = $1 AND report_type = $2`, tenantID, body.ReportType); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update existing defaults"})
@@ -363,7 +363,7 @@ func UpdateReportView(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start report view update"})
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }()
 		if body.IsDefault {
 			if _, err := tx.Exec(ctx, `UPDATE report_saved_views SET is_default = false, updated_at = NOW() WHERE tenant_id = $1 AND report_type = $2 AND id <> $3`, tenantID, body.ReportType, viewID); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update existing defaults"})

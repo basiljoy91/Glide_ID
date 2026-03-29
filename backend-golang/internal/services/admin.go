@@ -582,7 +582,7 @@ func (s *AdminService) CreateCustomRole(ctx context.Context, tenantID, actorUser
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO custom_roles (id, tenant_id, name, description, is_active, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -646,7 +646,7 @@ func (s *AdminService) UpdateCustomRole(ctx context.Context, tenantID, roleID st
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	cmd, err := tx.Exec(ctx, `
 		UPDATE custom_roles
 		SET name = $3, description = $4, is_active = $5, updated_at = NOW()
@@ -731,7 +731,7 @@ func (s *AdminService) AssignCustomRole(ctx context.Context, tenantID, targetUse
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `DELETE FROM custom_role_assignments WHERE user_id = $1`, targetUserID); err != nil {
 		return err
 	}
