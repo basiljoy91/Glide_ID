@@ -800,13 +800,13 @@ export default function AttendanceReportPage() {
         <>
           {report.comparison && (
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              {[
+              {([
                 ['Check-ins', report.comparison.check_ins],
                 ['Check-outs', report.comparison.check_outs],
                 ['Anomalies', report.comparison.anomalies],
                 ['Late Arrivals', report.comparison.late_arrivals],
                 ['Early Departures', report.comparison.early_departures],
-              ].map(([label, metric]) => {
+              ] as [string, ComparisonMetric][]).map(([label, metric]) => {
                 const item = metric as ComparisonMetric
                 return (
                   <div key={label} className="bg-card border border-border rounded-lg p-4 shadow-sm">

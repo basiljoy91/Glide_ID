@@ -82,6 +82,12 @@ export default function OrgUsersPage() {
   const [debouncedQuery, setDebouncedQuery] = useState('')
 
   const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+  const authHeaders = (includeJson = false) => {
+    const nextHeaders: Record<string, string> = {}
+    if (includeJson) nextHeaders['Content-Type'] = 'application/json'
+    if (token) nextHeaders.Authorization = `Bearer ${token}`
+    return nextHeaders
+  }
 
   const formatDate = (value?: string | null) => {
     if (!value) return '—'
@@ -517,7 +523,7 @@ export default function OrgUsersPage() {
       if (bulkEdit.status === 'inactive') changes.is_active = false
       const resp = await fetch(`${base}/api/v1/workforce/bulk-edits/preview`, {
         method: 'POST',
-        headers,
+        headers: authHeaders(true),
         body: JSON.stringify({ user_ids: selectedUserIds, changes }),
       })
       const data = await resp.json().catch(() => ({}))
@@ -539,7 +545,7 @@ export default function OrgUsersPage() {
       setBulkApplying(true)
       const resp = await fetch(`${base}/api/v1/workforce/bulk-edits/${id}/apply`, {
         method: 'POST',
-        headers,
+        headers: authHeaders(),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) {
@@ -560,7 +566,7 @@ export default function OrgUsersPage() {
       setBulkApplying(true)
       const resp = await fetch(`${base}/api/v1/workforce/bulk-edits/${id}/rollback`, {
         method: 'POST',
-        headers,
+        headers: authHeaders(),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) {

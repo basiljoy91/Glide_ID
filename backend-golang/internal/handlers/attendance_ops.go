@@ -111,12 +111,12 @@ func defaultAttendanceOperationsSettings() attendanceOperationsSettings {
 	}
 }
 
-func loadAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID string) (attendanceOperationsSettings, error) {
+func loadAttendanceOperationsSettings(c *fiber.Ctx, db *pgxpool.Pool, tenantID string) (attendanceOperationsSettings, error) {
 	settings := defaultAttendanceOperationsSettings()
 	var raw []byte
-	if err := db.QueryRow(ctx.Context(), `SELECT COALESCE(settings, '{}'::jsonb) FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&raw); err != nil {
+	if err := db.QueryRow(c.Context(), `SELECT COALESCE(settings, '{}'::jsonb) FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&raw); err != nil {
 		var exists bool
-		if legacyErr := db.QueryRow(ctx.Context(), `
+		if legacyErr := db.QueryRow(c.Context(), `
 			SELECT EXISTS(
 				SELECT 1
 				FROM tenants
@@ -147,9 +147,9 @@ func loadAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID 
 	return settings, nil
 }
 
-func saveAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID string, settings attendanceOperationsSettings) error {
+func saveAttendanceOperationsSettings(c *fiber.Ctx, db *pgxpool.Pool, tenantID string, settings attendanceOperationsSettings) error {
 	var raw []byte
-	if err := db.QueryRow(ctx.Context(), `SELECT COALESCE(settings, '{}'::jsonb) FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&raw); err != nil {
+	if err := db.QueryRow(c.Context(), `SELECT COALESCE(settings, '{}'::jsonb) FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&raw); err != nil {
 		raw = []byte(`{}`)
 	}
 	var doc map[string]any
@@ -164,7 +164,7 @@ func saveAttendanceOperationsSettings(ctx fiber.Ctx, db *pgxpool.Pool, tenantID 
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(ctx.Context(), `UPDATE tenants SET settings = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL`, payload, tenantID)
+	_, err = db.Exec(c.Context(), `UPDATE tenants SET settings = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL`, payload, tenantID)
 	return err
 }
 
@@ -178,12 +178,12 @@ func resolveWorkflowUserID(c *fiber.Ctx, selfService bool, bodyUserID *string) (
 	return strings.TrimSpace(*bodyUserID), nil
 }
 
-func ensureUserWithinScope(ctx fiber.Ctx, db *pgxpool.Pool, tenantID, userID, scopedDepartmentID string) error {
+func ensureUserWithinScope(c *fiber.Ctx, db *pgxpool.Pool, tenantID, userID, scopedDepartmentID string) error {
 	if scopedDepartmentID == "" {
 		return nil
 	}
 	var departmentID *uuid.UUID
-	if err := db.QueryRow(ctx.Context(), `SELECT department_id FROM users WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, userID, tenantID).Scan(&departmentID); err != nil {
+	if err := db.QueryRow(c.Context(), `SELECT department_id FROM users WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, userID, tenantID).Scan(&departmentID); err != nil {
 		return err
 	}
 	if departmentID == nil || departmentID.String() != scopedDepartmentID {
@@ -208,7 +208,7 @@ func parseDateValue(value string) (time.Time, error) {
 
 func GetAttendanceOperationsSettings(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		settings, err := loadAttendanceOperationsSettings(*c, db, middleware.GetTenantID(c))
+		settings, err := loadAttendanceOperationsSettings(c, db, middleware.GetTenantID(c))
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load attendance operations settings"})
 		}
@@ -228,7 +228,7 @@ func UpdateAttendanceOperationsSettings(db *pgxpool.Pool) fiber.Handler {
 		if settings.ExceptionSLAHours <= 0 {
 			settings.ExceptionSLAHours = 24
 		}
-		if err := saveAttendanceOperationsSettings(*c, db, middleware.GetTenantID(c), settings); err != nil {
+		if err := saveAttendanceOperationsSettings(c, db, middleware.GetTenantID(c), settings); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to save attendance operations settings"})
 		}
 		return c.JSON(settings)
@@ -262,7 +262,7 @@ func CreateLeaveRequest(db *pgxpool.Pool, selfService bool) fiber.Handler {
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve department scope"})
 		}
-		if err := ensureUserWithinScope(*c, db, tenantID, userID, scopedDepartmentID); err != nil {
+		if err := ensureUserWithinScope(c, db, tenantID, userID, scopedDepartmentID); err != nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested employee is outside your scope"})
 		}
 		startDate, err := parseDateValue(body.StartDate)
@@ -374,7 +374,7 @@ func ReviewLeaveRequest(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start leave review"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 		if err := reviewLeaveRequestTx(c.Context(), tx, tenantID, actorUserID, requestID, status, body.ReviewNote); err != nil {
 			if errors.Is(err, errWorkflowRequestNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Leave request not found"})
@@ -415,7 +415,7 @@ func CreateRegularizationRequest(db *pgxpool.Pool, selfService bool) fiber.Handl
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve department scope"})
 		}
-		if err := ensureUserWithinScope(*c, db, tenantID, userID, scopedDepartmentID); err != nil {
+		if err := ensureUserWithinScope(c, db, tenantID, userID, scopedDepartmentID); err != nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested employee is outside your scope"})
 		}
 		requestDate, err := parseDateValue(body.RequestDate)
@@ -526,7 +526,7 @@ func ReviewRegularizationRequest(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start regularization review"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 		var userID string
 		var ignoredAttendanceLogID *uuid.UUID
 		var ignoredRequestedStatus string
@@ -538,7 +538,7 @@ func ReviewRegularizationRequest(db *pgxpool.Pool) fiber.Handler {
 		`, requestID, tenantID).Scan(&userID, &ignoredAttendanceLogID, &ignoredRequestedStatus, &ignoredRequestedPunchTime); err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Regularization request not found"})
 		}
-		if err := ensureUserWithinScope(*c, db, tenantID, userID, scopedDepartmentID); err != nil {
+		if err := ensureUserWithinScope(c, db, tenantID, userID, scopedDepartmentID); err != nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Regularization request is outside your scope"})
 		}
 		if err := reviewRegularizationRequestTx(c.Context(), tx, tenantID, actorUserID, requestID, status, body.ReviewNote); err != nil {
@@ -579,7 +579,7 @@ func CreateOvertimeRequest(db *pgxpool.Pool, selfService bool) fiber.Handler {
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve department scope"})
 		}
-		if err := ensureUserWithinScope(*c, db, tenantID, userID, scopedDepartmentID); err != nil {
+		if err := ensureUserWithinScope(c, db, tenantID, userID, scopedDepartmentID); err != nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested employee is outside your scope"})
 		}
 		workDate, err := parseDateValue(body.WorkDate)
@@ -692,7 +692,7 @@ func ReviewOvertimeRequest(db *pgxpool.Pool) fiber.Handler {
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start overtime review"})
 		}
-		defer tx.Rollback(c.Context())
+		defer func() { _ = tx.Rollback(c.Context()) }()
 		if err := reviewOvertimeRequestTx(c.Context(), tx, tenantID, actorUserID, requestID, status, approvedMinutes, body.ReviewNote); err != nil {
 			if errors.Is(err, errWorkflowRequestNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Overtime request not found"})
@@ -732,7 +732,7 @@ func CreateShiftAssignment(db *pgxpool.Pool) fiber.Handler {
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to resolve department scope"})
 		}
-		if err := ensureUserWithinScope(*c, db, tenantID, strings.TrimSpace(body.UserID), scopedDepartmentID); err != nil {
+		if err := ensureUserWithinScope(c, db, tenantID, strings.TrimSpace(body.UserID), scopedDepartmentID); err != nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Requested employee is outside your scope"})
 		}
 		startDate, err := parseDateValue(body.StartDate)
@@ -937,7 +937,7 @@ func AssignAttendanceException(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid sla_due_at"})
 		}
 		if slaDueAt == nil {
-			settings, _ := loadAttendanceOperationsSettings(*c, db, tenantID)
+			settings, _ := loadAttendanceOperationsSettings(c, db, tenantID)
 			computed := time.Now().UTC().Add(time.Duration(settings.ExceptionSLAHours) * time.Hour)
 			slaDueAt = &computed
 		}

@@ -129,29 +129,6 @@ func defaultTenantSettings() tenantSettingsDocument {
 	}
 }
 
-func isMissingTenantSettingsColumnError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, `column "settings" does not exist`) ||
-		strings.Contains(msg, `column "sso_provider" does not exist`) ||
-		strings.Contains(msg, `column "sso_config" does not exist`)
-}
-
-func isRecoverableTenantSettingsError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if isMissingTenantSettingsColumnError(err) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "invalid character") ||
-		strings.Contains(msg, "cannot unmarshal") ||
-		strings.Contains(msg, "json")
-}
-
 func DefaultPasswordPolicy() models.PasswordPolicySettings {
 	return defaultTenantSettings().Security.PasswordPolicy
 }

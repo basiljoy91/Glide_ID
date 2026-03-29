@@ -94,17 +94,6 @@ func parseOptionalUUID(value *string) (*uuid.UUID, error) {
 	return &parsed, nil
 }
 
-func parseOptionalDate(value *string) (*time.Time, error) {
-	if value == nil || strings.TrimSpace(*value) == "" {
-		return nil, nil
-	}
-	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(*value))
-	if err != nil {
-		return nil, err
-	}
-	return &parsed, nil
-}
-
 func parseOptionalDateTime(value *string) (*time.Time, error) {
 	if value == nil || strings.TrimSpace(*value) == "" {
 		return nil, nil
