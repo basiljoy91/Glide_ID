@@ -31,7 +31,9 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		public.Post("/auth/mfa/verify", handlers.VerifyMFALogin(svc.Auth, svc.User, svc.Admin, svc.Audit))
 		public.Post("/auth/sso/initiate", handlers.InitiateSSO(svc.Attendance.GetDB()))
 		public.Post("/auth/sso/callback", handlers.SSOCallback(svc.Auth))
-		public.Post("/onboarding/provision", handlers.ProvisionOrganization(svc.Attendance.GetDB()))
+		public.Post("/onboarding/email-verification/start", handlers.StartOnboardingEmailVerification(svc.Auth, svc.Email))
+		public.Post("/onboarding/email-verification/verify", handlers.VerifyOnboardingEmailVerification(svc.Auth))
+		public.Post("/onboarding/provision", handlers.ProvisionOrganization(svc.Attendance.GetDB(), svc.Auth, svc.Email))
 		public.Get("/enroll/info/:token", handlers.EnrollInfo(svc.User))
 		public.Post("/enroll/face/:token", handlers.EnrollFace(svc.Attendance))
 	}
@@ -54,13 +56,15 @@ func SetupRoutes(app *fiber.App, svc *Services, cfg *config.Config) {
 		superAdmin.Use(middleware.RequireRole("super_admin"))
 		{
 			superAdmin.Get("/metrics", handlers.GetSuperAdminMetrics(svc.Attendance.GetDB()))
+			superAdmin.Get("/audit", handlers.ListSuperAdminAuditLogs(svc.Audit))
 			superAdmin.Get("/organizations", handlers.ListSuperAdminOrganizations(svc.Attendance.GetDB()))
-			superAdmin.Patch("/organizations/:id/subscription", handlers.UpdateOrganizationSubscription(svc.Attendance.GetDB()))
-			superAdmin.Patch("/organizations/:id/status", handlers.SetOrganizationStatus(svc.Attendance.GetDB()))
+			superAdmin.Put("/organizations/:id", handlers.UpdateOrganization(svc.Attendance.GetDB(), svc.Audit))
+			superAdmin.Patch("/organizations/:id/subscription", handlers.UpdateOrganizationSubscription(svc.Attendance.GetDB(), svc.Audit))
+			superAdmin.Patch("/organizations/:id/status", handlers.SetOrganizationStatus(svc.Attendance.GetDB(), svc.Audit))
 			superAdmin.Get("/billing/overview", handlers.GetBillingOverview(svc.Attendance.GetDB()))
 			superAdmin.Get("/billing/invoices", handlers.ListBillingInvoices(svc.Attendance.GetDB()))
-			superAdmin.Post("/billing/invoices", handlers.CreateBillingInvoice(svc.Attendance.GetDB()))
-			superAdmin.Patch("/billing/invoices/:id/mark-paid", handlers.MarkBillingInvoicePaid(svc.Attendance.GetDB()))
+			superAdmin.Post("/billing/invoices", handlers.CreateBillingInvoice(svc.Attendance.GetDB(), svc.Audit))
+			superAdmin.Patch("/billing/invoices/:id/mark-paid", handlers.MarkBillingInvoicePaid(svc.Attendance.GetDB(), svc.Audit))
 		}
 
 		// Attendance

@@ -210,7 +210,7 @@ func GetAttendanceOperationsSettings(db *pgxpool.Pool) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		settings, err := loadAttendanceOperationsSettings(c, db, middleware.GetTenantID(c))
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load attendance operations settings"})
+			return c.JSON(defaultAttendanceOperationsSettings())
 		}
 		return c.JSON(settings)
 	}

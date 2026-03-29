@@ -30,15 +30,17 @@ export default function SuperAdminOrganizationsPage() {
   const [rows, setRows] = useState<OrgRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [query, setQuery] = useState('')
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(25)
+  const [hasNextPage, setHasNextPage] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [savingId, setSavingId] = useState<string | null>(null)
   const [form, setForm] = useState<any>({})
 
   useEffect(() => {
     if (!isAuthenticated || user?.role !== 'super_admin') {
       router.push('/admin/login')
-      return
     }
-    void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, user?.role])
 
@@ -47,23 +49,35 @@ export default function SuperAdminOrganizationsPage() {
       setIsLoading(true)
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
-      const q = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ''
+      const params = new URLSearchParams()
+      params.set('limit', String(pageSize))
+      params.set('offset', String(page * pageSize))
+      if (query.trim()) params.set('q', query.trim())
       const resp = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/admin/super/organizations${q}`,
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/admin/super/organizations?${params.toString()}`,
         { headers }
       )
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}))
         throw new Error(err.error || 'Failed to load organizations')
       }
-      setRows(await resp.json())
+      const data = await resp.json()
+      setRows(data)
+      setHasNextPage(data.length === pageSize)
     } catch (e: any) {
       toast.error(e.message || 'Failed to load organizations')
       setRows([])
+      setHasNextPage(false)
     } finally {
       setIsLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!isAuthenticated || user?.role !== 'super_admin') return
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize])
 
   const beginEdit = (r: OrgRow) => {
     setEditingId(r.id)
@@ -84,13 +98,14 @@ export default function SuperAdminOrganizationsPage() {
 
   const saveEdit = async (id: string) => {
     try {
+      setSavingId(id)
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (token) headers.Authorization = `Bearer ${token}`
 
-      const subResp = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/admin/super/organizations/${id}/subscription`,
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/admin/super/organizations/${id}`,
         {
-          method: 'PATCH',
+          method: 'PUT',
           headers,
           body: JSON.stringify({
             plan_tier: form.plan_tier,
@@ -98,27 +113,13 @@ export default function SuperAdminOrganizationsPage() {
             seat_count: Number(form.seat_count),
             base_amount_cents: Number(form.base_amount_cents),
             per_seat_amount_cents: Number(form.per_seat_amount_cents),
-          }),
-        }
-      )
-      if (!subResp.ok) {
-        const err = await subResp.json().catch(() => ({}))
-        throw new Error(err.error || 'Failed to update subscription')
-      }
-
-      const statusResp = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/admin/super/organizations/${id}/status`,
-        {
-          method: 'PATCH',
-          headers,
-          body: JSON.stringify({
             is_active: Boolean(form.is_active),
           }),
         }
       )
-      if (!statusResp.ok) {
-        const err = await statusResp.json().catch(() => ({}))
-        throw new Error(err.error || 'Failed to update organization status')
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update organization')
       }
 
       toast.success('Organization updated')
@@ -126,6 +127,8 @@ export default function SuperAdminOrganizationsPage() {
       await load()
     } catch (e: any) {
       toast.error(e.message || 'Failed to update organization')
+    } finally {
+      setSavingId(null)
     }
   }
 
@@ -138,15 +141,35 @@ export default function SuperAdminOrganizationsPage() {
         <p className="text-muted-foreground">Manage plan, billing configuration, and organization status.</p>
       </div>
 
-      <div className="bg-card border border-border rounded-lg p-4 shadow-sm flex gap-2">
+      <div className="bg-card border border-border rounded-lg p-4 shadow-sm flex flex-col gap-3 md:flex-row">
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search by name or slug"
         />
-        <Button onClick={() => void load()} disabled={isLoading}>
+        <div className="flex gap-2">
+          <select
+            value={String(pageSize)}
+            onChange={(e) => {
+              setPage(0)
+              setPageSize(Number(e.target.value))
+            }}
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="10">10 / page</option>
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+          </select>
+          <Button
+            onClick={() => {
+              setPage(0)
+              void load()
+            }}
+            disabled={isLoading}
+          >
           {isLoading ? 'Loading…' : 'Search'}
-        </Button>
+          </Button>
+        </div>
       </div>
 
       <div className="border rounded-lg bg-card overflow-x-auto">
@@ -273,8 +296,8 @@ export default function SuperAdminOrganizationsPage() {
                   <td className="px-4 py-2 text-right">
                     {editingId === r.id ? (
                       <div className="flex justify-end gap-2">
-                        <Button size="sm" onClick={() => void saveEdit(r.id)}>
-                          Save
+                        <Button size="sm" onClick={() => void saveEdit(r.id)} disabled={savingId === r.id}>
+                          {savingId === r.id ? 'Saving…' : 'Save'}
                         </Button>
                         <Button size="sm" variant="outline" onClick={cancelEdit}>
                           Cancel
@@ -291,6 +314,21 @@ export default function SuperAdminOrganizationsPage() {
             </tbody>
           </table>
         )}
+      </div>
+
+      <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-muted-foreground">
+          Page {page + 1}
+          {rows.length > 0 ? ` • Showing ${page * pageSize + 1}-${page * pageSize + rows.length}` : ''}
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setPage((prev) => Math.max(prev - 1, 0))} disabled={page === 0 || isLoading}>
+            Previous
+          </Button>
+          <Button variant="outline" onClick={() => setPage((prev) => prev + 1)} disabled={!hasNextPage || isLoading}>
+            Next
+          </Button>
+        </div>
       </div>
     </div>
   )

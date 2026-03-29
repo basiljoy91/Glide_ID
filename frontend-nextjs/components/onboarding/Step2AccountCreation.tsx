@@ -1,10 +1,13 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { OnboardingData } from './OnboardingWizard'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Shield, Key } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import toast from 'react-hot-toast'
 
 interface Step2Props {
   data: OnboardingData
@@ -20,6 +23,99 @@ const ssoProviders = [
 ]
 
 export function Step2AccountCreation({ data, updateData }: Step2Props) {
+  const [code, setCode] = useState('')
+  const [isSendingCode, setIsSendingCode] = useState(false)
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false)
+
+  useEffect(() => {
+    setCode('')
+  }, [data.adminEmail])
+
+  const handleEmailChange = (email: string) => {
+    updateData({
+      adminEmail: email,
+      emailVerificationChallengeId: undefined,
+      emailVerified: false,
+      emailVerifiedAt: undefined,
+    })
+  }
+
+  const sendVerificationCode = async () => {
+    if (!data.adminEmail.trim()) {
+      toast.error('Enter the admin email first')
+      return
+    }
+    try {
+      setIsSendingCode(true)
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/public/onboarding/email-verification/start`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ email: data.adminEmail.trim().toLowerCase() }),
+        }
+      )
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.error || 'Failed to send verification code')
+      }
+      const payload = await response.json()
+      updateData({
+        emailVerificationChallengeId: payload.challenge_id,
+        emailVerified: false,
+        emailVerifiedAt: undefined,
+      })
+      toast.success('Verification code sent')
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to send verification code')
+    } finally {
+      setIsSendingCode(false)
+    }
+  }
+
+  const verifyCode = async () => {
+    if (!data.emailVerificationChallengeId) {
+      toast.error('Send a verification code first')
+      return
+    }
+    if (!code.trim()) {
+      toast.error('Enter the verification code')
+      return
+    }
+    try {
+      setIsVerifyingCode(true)
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/public/onboarding/email-verification/verify`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            challenge_id: data.emailVerificationChallengeId,
+            email: data.adminEmail.trim().toLowerCase(),
+            code: code.trim(),
+          }),
+        }
+      )
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.error || 'Failed to verify code')
+      }
+      updateData({
+        emailVerified: true,
+        emailVerifiedAt: new Date().toISOString(),
+      })
+      toast.success('Email verified')
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to verify code')
+    } finally {
+      setIsVerifyingCode(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -64,10 +160,38 @@ export function Step2AccountCreation({ data, updateData }: Step2Props) {
             type="email"
             placeholder="admin@company.com"
             value={data.adminEmail}
-            onChange={(e) => updateData({ adminEmail: e.target.value })}
+            onChange={(e) => handleEmailChange(e.target.value)}
             className="mt-1"
             required
           />
+        </div>
+
+        <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="font-medium">Email verification</div>
+              <p className="text-sm text-muted-foreground">
+                We&apos;ll send a one-time code to the admin email before provisioning your workspace.
+              </p>
+            </div>
+            <Button type="button" variant="outline" onClick={() => void sendVerificationCode()} disabled={isSendingCode}>
+              {isSendingCode ? 'Sending…' : data.emailVerificationChallengeId ? 'Resend code' : 'Send code'}
+            </Button>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="Enter 6-digit code"
+              maxLength={6}
+            />
+            <Button type="button" onClick={() => void verifyCode()} disabled={isVerifyingCode || !data.emailVerificationChallengeId}>
+              {isVerifyingCode ? 'Verifying…' : 'Verify email'}
+            </Button>
+          </div>
+          <div className={`text-sm ${data.emailVerified ? 'text-green-700' : 'text-muted-foreground'}`}>
+            {data.emailVerified ? 'Admin email verified. You can continue onboarding.' : 'Verification is required before you continue.'}
+          </div>
         </div>
 
         <div>

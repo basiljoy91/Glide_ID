@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/store/useStore'
 import { useRouter } from 'next/navigation'
 import { DataCard, DataCardGrid } from '@/components/data/DataCard'
+import { Button } from '@/components/ui/button'
 import {
   Activity,
   Building2,
@@ -31,6 +32,7 @@ export default function SuperAdminDashboard() {
   const router = useRouter()
   const [metrics, setMetrics] = useState<GlobalMetrics | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated || user?.role !== 'super_admin') {
@@ -44,6 +46,7 @@ export default function SuperAdminDashboard() {
   const fetchMetrics = async () => {
     try {
       setIsLoading(true)
+      setLoadError(null)
       const token = useAuthStore.getState().token
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/admin/super/metrics`,
@@ -68,16 +71,10 @@ export default function SuperAdminDashboard() {
         growthRate: data.growthRate ?? data.growth_rate ?? 0,
       })
     } catch (error: any) {
-      toast.error(error.message || 'Failed to load metrics')
-      // fallback mock data
-      setMetrics({
-        totalOrganizations: 0,
-        totalUsers: 0,
-        totalCheckIns: 0,
-        monthlyRevenue: 0,
-        activeOrganizations: 0,
-        growthRate: 0,
-      })
+      const message = error.message || 'Failed to load metrics'
+      toast.error(message)
+      setMetrics(null)
+      setLoadError(message)
     } finally {
       setIsLoading(false)
     }
@@ -99,6 +96,16 @@ export default function SuperAdminDashboard() {
           <SkeletonCard />
           <SkeletonCard />
         </DataCardGrid>
+      ) : loadError ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-red-900">
+          <div className="text-lg font-semibold">Metrics unavailable</div>
+          <p className="mt-2 text-sm">
+            {loadError}. The dashboard is intentionally not showing fallback numbers so an outage does not look like valid platform data.
+          </p>
+          <Button className="mt-4" variant="outline" onClick={() => void fetchMetrics()}>
+            Retry
+          </Button>
+        </div>
       ) : metrics ? (
         <>
           <DataCardGrid>
@@ -199,5 +206,3 @@ export default function SuperAdminDashboard() {
     </div>
   )
 }
-
-

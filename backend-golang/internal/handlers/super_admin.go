@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"enterprise-attendance-api/internal/services"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -11,8 +13,16 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type superAdminTx interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+var errOrganizationNotFound = errors.New("organization not found")
 
 type superAdminMetricsResponse struct {
 	TotalOrganizations  int     `json:"totalOrganizations"`
@@ -65,6 +75,16 @@ type billingInvoiceRow struct {
 	PaidAt           *time.Time `json:"paid_at"`
 	PaymentReference *string    `json:"payment_reference"`
 	CreatedAt        time.Time  `json:"created_at"`
+}
+
+type superAdminOrganizationUpdateRequest struct {
+	PlanTier           *string `json:"plan_tier"`
+	Status             *string `json:"status"`
+	SeatCount          *int    `json:"seat_count"`
+	BaseAmountCents    *int    `json:"base_amount_cents"`
+	PerSeatAmountCents *int    `json:"per_seat_amount_cents"`
+	BillingCycle       *string `json:"billing_cycle"`
+	IsActive           *bool   `json:"is_active"`
 }
 
 // GetSuperAdminMetrics returns global platform metrics (no PII).
@@ -213,7 +233,7 @@ func ListSuperAdminOrganizations(db *pgxpool.Pool) fiber.Handler {
 }
 
 // UpdateOrganizationSubscription updates tenant plan and billing subscription settings.
-func UpdateOrganizationSubscription(db *pgxpool.Pool) fiber.Handler {
+func UpdateOrganizationSubscription(db *pgxpool.Pool, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := c.Params("id")
 		if _, err := uuid.Parse(tenantID); err != nil {
@@ -243,85 +263,35 @@ func UpdateOrganizationSubscription(db *pgxpool.Pool) fiber.Handler {
 			_ = tx.Rollback(ctx)
 		}()
 
-		var existingPlan string
-		err = tx.QueryRow(ctx, `SELECT subscription_tier::text FROM tenants WHERE id = $1 AND deleted_at IS NULL`, tenantID).Scan(&existingPlan)
+		plan, currentStatus, seatCount, baseAmount, perSeatAmount, billingCycle, err := upsertOrganizationSubscriptionTx(ctx, tx, tenantID, superAdminOrganizationUpdateRequest{
+			PlanTier:           body.PlanTier,
+			Status:             body.Status,
+			SeatCount:          body.SeatCount,
+			BaseAmountCents:    body.BaseAmountCents,
+			PerSeatAmountCents: body.PerSeatAmountCents,
+			BillingCycle:       body.BillingCycle,
+		})
 		if err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Organization not found"})
-		}
-
-		var currentStatus string
-		var seatCount int
-		var baseAmount int
-		var perSeatAmount int
-		var billingCycle string
-		err = tx.QueryRow(ctx, `
-			SELECT status::text, seat_count, base_amount_cents, per_seat_amount_cents, billing_cycle
-			FROM billing_subscriptions
-			WHERE tenant_id = $1
-		`, tenantID).Scan(&currentStatus, &seatCount, &baseAmount, &perSeatAmount, &billingCycle)
-		if err == pgx.ErrNoRows {
-			currentStatus = "active"
-			seatCount = 1
-			billingCycle = "monthly"
-			baseAmount = 0
-			perSeatAmount = 0
-		} else if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load subscription"})
-		}
-
-		plan := existingPlan
-		if body.PlanTier != nil && *body.PlanTier != "" {
-			plan = *body.PlanTier
-		}
-		if body.Status != nil && *body.Status != "" {
-			currentStatus = *body.Status
-		}
-		if body.SeatCount != nil && *body.SeatCount > 0 {
-			seatCount = *body.SeatCount
-		}
-		if body.BaseAmountCents != nil && *body.BaseAmountCents >= 0 {
-			baseAmount = *body.BaseAmountCents
-		}
-		if body.PerSeatAmountCents != nil && *body.PerSeatAmountCents >= 0 {
-			perSeatAmount = *body.PerSeatAmountCents
-		}
-		if body.BillingCycle != nil && *body.BillingCycle != "" {
-			billingCycle = *body.BillingCycle
-		}
-
-		if _, err := tx.Exec(ctx, `
-			UPDATE tenants
-			SET subscription_tier = $1::subscription_tier, updated_at = NOW()
-			WHERE id = $2
-		`, plan, tenantID); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid subscription tier"})
-		}
-
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO billing_subscriptions (
-				tenant_id, plan_tier, status, seat_count, base_amount_cents, per_seat_amount_cents,
-				billing_cycle, current_period_start, current_period_end, next_invoice_at, updated_at
-			)
-			VALUES (
-				$1, $2::subscription_tier, $3::billing_subscription_status, $4, $5, $6,
-				$7, NOW() - INTERVAL '30 days', NOW(), NOW() + INTERVAL '30 days', NOW()
-			)
-			ON CONFLICT (tenant_id)
-			DO UPDATE SET
-				plan_tier = EXCLUDED.plan_tier,
-				status = EXCLUDED.status,
-				seat_count = EXCLUDED.seat_count,
-				base_amount_cents = EXCLUDED.base_amount_cents,
-				per_seat_amount_cents = EXCLUDED.per_seat_amount_cents,
-				billing_cycle = EXCLUDED.billing_cycle,
-				updated_at = NOW()
-		`, tenantID, plan, currentStatus, seatCount, baseAmount, perSeatAmount, billingCycle); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Failed to update subscription details"})
+			switch {
+			case errors.Is(err, errOrganizationNotFound):
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Organization not found"})
+			default:
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			}
 		}
 
 		if err := tx.Commit(ctx); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to commit subscription update"})
 		}
+		resourceID, _ := uuid.Parse(tenantID)
+		logSuperAdminAudit(c, auditSvc, tenantID, "settings_updated", "tenant_subscription", &resourceID, map[string]any{
+			"plan_tier":             plan,
+			"status":                currentStatus,
+			"seat_count":            seatCount,
+			"base_amount_cents":     baseAmount,
+			"per_seat_amount_cents": perSeatAmount,
+			"billing_cycle":         billingCycle,
+		})
 
 		return c.JSON(fiber.Map{
 			"success":               true,
@@ -336,8 +306,90 @@ func UpdateOrganizationSubscription(db *pgxpool.Pool) fiber.Handler {
 	}
 }
 
+// UpdateOrganization applies billing and activation changes in a single transaction.
+func UpdateOrganization(db *pgxpool.Pool, auditSvc *services.AuditService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		tenantID := c.Params("id")
+		if _, err := uuid.Parse(tenantID); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid tenant ID"})
+		}
+
+		var body superAdminOrganizationUpdateRequest
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+
+		ctx, cancel := context.WithTimeout(c.Context(), 8*time.Second)
+		defer cancel()
+
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start organization update"})
+		}
+		defer func() {
+			_ = tx.Rollback(ctx)
+		}()
+
+		plan, status, seatCount, baseAmount, perSeatAmount, billingCycle, err := upsertOrganizationSubscriptionTx(ctx, tx, tenantID, body)
+		if err != nil {
+			switch {
+			case errors.Is(err, errOrganizationNotFound):
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Organization not found"})
+			default:
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			}
+		}
+
+		isActive := true
+		if body.IsActive != nil {
+			isActive = *body.IsActive
+			if err := setOrganizationStatusTx(ctx, tx, tenantID, isActive); err != nil {
+				if errors.Is(err, errOrganizationNotFound) {
+					return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Organization not found"})
+				}
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update organization status"})
+			}
+		} else {
+			if err := tx.QueryRow(ctx, `SELECT deleted_at IS NULL FROM tenants WHERE id = $1`, tenantID).Scan(&isActive); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Organization not found"})
+				}
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load organization status"})
+			}
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize organization update"})
+		}
+
+		resourceID, _ := uuid.Parse(tenantID)
+		logSuperAdminAudit(c, auditSvc, tenantID, "settings_updated", "tenant_configuration", &resourceID, map[string]any{
+			"plan_tier":             plan,
+			"status":                status,
+			"seat_count":            seatCount,
+			"base_amount_cents":     baseAmount,
+			"per_seat_amount_cents": perSeatAmount,
+			"billing_cycle":         billingCycle,
+			"is_active":             isActive,
+			"atomic_update":         true,
+		})
+
+		return c.JSON(fiber.Map{
+			"success":               true,
+			"tenant_id":             tenantID,
+			"plan_tier":             plan,
+			"status":                status,
+			"seat_count":            seatCount,
+			"base_amount_cents":     baseAmount,
+			"per_seat_amount_cents": perSeatAmount,
+			"billing_cycle":         billingCycle,
+			"is_active":             isActive,
+		})
+	}
+}
+
 // SetOrganizationStatus activates/deactivates an organization.
-func SetOrganizationStatus(db *pgxpool.Pool) fiber.Handler {
+func SetOrganizationStatus(db *pgxpool.Pool, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := c.Params("id")
 		if _, err := uuid.Parse(tenantID); err != nil {
@@ -353,19 +405,31 @@ func SetOrganizationStatus(db *pgxpool.Pool) fiber.Handler {
 		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 		defer cancel()
 
-		if body.IsActive {
-			_, err := db.Exec(ctx, `UPDATE tenants SET deleted_at = NULL, updated_at = NOW() WHERE id = $1`, tenantID)
-			if err != nil {
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to start organization status update"})
+		}
+		defer func() {
+			_ = tx.Rollback(ctx)
+		}()
+
+		if err := setOrganizationStatusTx(ctx, tx, tenantID, body.IsActive); err != nil {
+			if errors.Is(err, errOrganizationNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Organization not found"})
+			}
+			if body.IsActive {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to activate organization"})
 			}
-			return c.JSON(fiber.Map{"success": true, "is_active": true})
-		}
-
-		_, err := db.Exec(ctx, `UPDATE tenants SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1`, tenantID)
-		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to deactivate organization"})
 		}
-		return c.JSON(fiber.Map{"success": true, "is_active": false})
+		if err := tx.Commit(ctx); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize organization status update"})
+		}
+		resourceID, _ := uuid.Parse(tenantID)
+		logSuperAdminAudit(c, auditSvc, tenantID, "settings_updated", "tenant_status", &resourceID, map[string]any{
+			"is_active": body.IsActive,
+		})
+		return c.JSON(fiber.Map{"success": true, "is_active": body.IsActive})
 	}
 }
 
@@ -378,13 +442,17 @@ func GetBillingOverview(db *pgxpool.Pool) fiber.Handler {
 		var resp billingOverviewResponse
 		_ = db.QueryRow(ctx, `
 			SELECT COALESCE(COUNT(*), 0)
-			FROM billing_subscriptions
-			WHERE status IN ('active', 'trialing', 'past_due')
+			FROM billing_subscriptions bs
+			JOIN tenants t ON t.id = bs.tenant_id
+			WHERE t.deleted_at IS NULL
+			  AND bs.status IN ('active', 'trialing', 'past_due')
 		`).Scan(&resp.ActiveSubscriptions)
 		_ = db.QueryRow(ctx, `
 			SELECT COALESCE(SUM(base_amount_cents + (per_seat_amount_cents * seat_count)), 0)
-			FROM billing_subscriptions
-			WHERE status IN ('active', 'trialing', 'past_due')
+			FROM billing_subscriptions bs
+			JOIN tenants t ON t.id = bs.tenant_id
+			WHERE t.deleted_at IS NULL
+			  AND bs.status IN ('active', 'trialing', 'past_due')
 		`).Scan(&resp.MonthlyRecurringRev)
 		_ = db.QueryRow(ctx, `
 			SELECT COALESCE(SUM(total_cents), 0)
@@ -474,7 +542,7 @@ func ListBillingInvoices(db *pgxpool.Pool) fiber.Handler {
 }
 
 // CreateBillingInvoice creates a manual invoice from current subscription terms.
-func CreateBillingInvoice(db *pgxpool.Pool) fiber.Handler {
+func CreateBillingInvoice(db *pgxpool.Pool, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var body struct {
 			TenantID    string  `json:"tenant_id"`
@@ -504,14 +572,13 @@ func CreateBillingInvoice(db *pgxpool.Pool) fiber.Handler {
 		var seatCount int
 		var baseAmount int
 		var perSeatAmount int
-		err := db.QueryRow(ctx, `
-			SELECT id, seat_count, base_amount_cents, per_seat_amount_cents
-			FROM billing_subscriptions
-			WHERE tenant_id = $1
-		`, body.TenantID).Scan(&subscriptionID, &seatCount, &baseAmount, &perSeatAmount)
+		err := loadBillableSubscription(ctx, db, body.TenantID, &subscriptionID, &seatCount, &baseAmount, &perSeatAmount)
 		if err != nil {
-			if err == pgx.ErrNoRows {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Subscription not configured for this tenant"})
+			if errors.Is(err, errOrganizationNotFound) {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Organization is inactive or not found"})
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Active subscription not configured for this tenant"})
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load subscription"})
 		}
@@ -562,12 +629,24 @@ func CreateBillingInvoice(db *pgxpool.Pool) fiber.Handler {
 		}
 
 		_ = db.QueryRow(ctx, `SELECT name FROM tenants WHERE id = $1`, out.TenantID).Scan(&out.TenantName)
+		logSuperAdminAudit(c, auditSvc, out.TenantID.String(), "settings_updated", "billing_invoice", &out.ID, map[string]any{
+			"tenant_id":       out.TenantID,
+			"invoice_number":  out.InvoiceNumber,
+			"status":          out.Status,
+			"period_start":    out.PeriodStart.Format("2006-01-02"),
+			"period_end":      out.PeriodEnd.Format("2006-01-02"),
+			"subtotal_cents":  out.SubtotalCents,
+			"tax_cents":       out.TaxCents,
+			"total_cents":     out.TotalCents,
+			"payment_state":   "created",
+			"resource_origin": "super_admin",
+		})
 		return c.Status(fiber.StatusCreated).JSON(out)
 	}
 }
 
-// MarkBillingInvoicePaid marks an invoice as paid with optional payment reference.
-func MarkBillingInvoicePaid(db *pgxpool.Pool) fiber.Handler {
+// MarkBillingInvoicePaid marks an open invoice as fully paid.
+func MarkBillingInvoicePaid(db *pgxpool.Pool, auditSvc *services.AuditService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
 		if _, err := uuid.Parse(id); err != nil {
@@ -575,24 +654,66 @@ func MarkBillingInvoicePaid(db *pgxpool.Pool) fiber.Handler {
 		}
 
 		var body struct {
-			PaymentReference *string `json:"payment_reference"`
+			PaymentReference   *string `json:"payment_reference"`
+			PaymentAmountCents *int    `json:"payment_amount_cents"`
 		}
-		_ = c.BodyParser(&body)
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+		if body.PaymentReference == nil || strings.TrimSpace(*body.PaymentReference) == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payment_reference is required"})
+		}
+		if body.PaymentAmountCents == nil || *body.PaymentAmountCents <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payment_amount_cents must be greater than zero"})
+		}
 
 		ctx, cancel := context.WithTimeout(c.Context(), 6*time.Second)
 		defer cancel()
 
-		tag, err := db.Exec(ctx, `
-			UPDATE billing_invoices
-			SET status = 'paid', paid_at = NOW(), payment_reference = COALESCE($2, payment_reference), updated_at = NOW()
+		var tenantID uuid.UUID
+		var currentStatus string
+		var totalCents int
+		err := db.QueryRow(ctx, `
+			SELECT tenant_id, status::text, total_cents
+			FROM billing_invoices
 			WHERE id = $1
-		`, id, body.PaymentReference)
+		`, id).Scan(&tenantID, &currentStatus, &totalCents)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invoice not found"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load invoice"})
+		}
+		if currentStatus != "open" {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Only open invoices can be marked paid"})
+		}
+		if *body.PaymentAmountCents != totalCents {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error":       "payment_amount_cents must match the full invoice total",
+				"total_cents": totalCents,
+			})
+		}
+
+		err = db.QueryRow(ctx, `
+			UPDATE billing_invoices
+			SET status = 'paid', paid_at = NOW(), payment_reference = $2, updated_at = NOW()
+			WHERE id = $1 AND status = 'open'
+			RETURNING tenant_id
+		`, id, strings.TrimSpace(*body.PaymentReference)).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Invoice is no longer open"})
+			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to mark invoice paid"})
 		}
-		if tag.RowsAffected() == 0 {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invoice not found"})
-		}
+
+		invoiceID, _ := uuid.Parse(id)
+		logSuperAdminAudit(c, auditSvc, tenantID.String(), "settings_updated", "billing_invoice", &invoiceID, map[string]any{
+			"status":               "paid",
+			"payment_reference":    strings.TrimSpace(*body.PaymentReference),
+			"payment_amount_cents": *body.PaymentAmountCents,
+			"payment_state":        "marked_paid",
+		})
 		return c.JSON(fiber.Map{"success": true})
 	}
 }
@@ -604,4 +725,200 @@ func generateInvoiceNumber() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("INV-%s-%05d", time.Now().UTC().Format("20060102"), n.Int64()+10000), nil
+}
+
+func upsertOrganizationSubscriptionTx(ctx context.Context, tx superAdminTx, tenantID string, body superAdminOrganizationUpdateRequest) (string, string, int, int, int, string, error) {
+	var existingPlan string
+	err := tx.QueryRow(ctx, `SELECT subscription_tier::text FROM tenants WHERE id = $1`, tenantID).Scan(&existingPlan)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", 0, 0, 0, "", errOrganizationNotFound
+		}
+		return "", "", 0, 0, 0, "", err
+	}
+
+	var currentStatus string
+	var seatCount int
+	var baseAmount int
+	var perSeatAmount int
+	var billingCycle string
+	err = tx.QueryRow(ctx, `
+		SELECT status::text, seat_count, base_amount_cents, per_seat_amount_cents, billing_cycle
+		FROM billing_subscriptions
+		WHERE tenant_id = $1
+	`, tenantID).Scan(&currentStatus, &seatCount, &baseAmount, &perSeatAmount, &billingCycle)
+	if err == pgx.ErrNoRows {
+		currentStatus = "active"
+		seatCount = 1
+		billingCycle = "monthly"
+		baseAmount = 0
+		perSeatAmount = 0
+	} else if err != nil {
+		return "", "", 0, 0, 0, "", errors.New("failed to load subscription")
+	}
+
+	plan := existingPlan
+	if body.PlanTier != nil && *body.PlanTier != "" {
+		plan = *body.PlanTier
+	}
+	if body.Status != nil && *body.Status != "" {
+		currentStatus = *body.Status
+	}
+	if body.SeatCount != nil {
+		if *body.SeatCount <= 0 {
+			return "", "", 0, 0, 0, "", errors.New("seat_count must be greater than zero")
+		}
+		seatCount = *body.SeatCount
+	}
+	if body.BaseAmountCents != nil {
+		if *body.BaseAmountCents < 0 {
+			return "", "", 0, 0, 0, "", errors.New("base_amount_cents cannot be negative")
+		}
+		baseAmount = *body.BaseAmountCents
+	}
+	if body.PerSeatAmountCents != nil {
+		if *body.PerSeatAmountCents < 0 {
+			return "", "", 0, 0, 0, "", errors.New("per_seat_amount_cents cannot be negative")
+		}
+		perSeatAmount = *body.PerSeatAmountCents
+	}
+	if body.BillingCycle != nil && *body.BillingCycle != "" {
+		billingCycle = *body.BillingCycle
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE tenants
+		SET subscription_tier = $1::subscription_tier, updated_at = NOW()
+		WHERE id = $2
+	`, plan, tenantID); err != nil {
+		return "", "", 0, 0, 0, "", errors.New("invalid subscription tier")
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO billing_subscriptions (
+			tenant_id, plan_tier, status, seat_count, base_amount_cents, per_seat_amount_cents,
+			billing_cycle, current_period_start, current_period_end, next_invoice_at, updated_at
+		)
+		VALUES (
+			$1, $2::subscription_tier, $3::billing_subscription_status, $4, $5, $6,
+			$7, NOW() - INTERVAL '30 days', NOW(), NOW() + INTERVAL '30 days', NOW()
+		)
+		ON CONFLICT (tenant_id)
+		DO UPDATE SET
+			plan_tier = EXCLUDED.plan_tier,
+			status = EXCLUDED.status,
+			seat_count = EXCLUDED.seat_count,
+			base_amount_cents = EXCLUDED.base_amount_cents,
+			per_seat_amount_cents = EXCLUDED.per_seat_amount_cents,
+			billing_cycle = EXCLUDED.billing_cycle,
+			updated_at = NOW()
+	`, tenantID, plan, currentStatus, seatCount, baseAmount, perSeatAmount, billingCycle); err != nil {
+		return "", "", 0, 0, 0, "", errors.New("failed to update subscription details")
+	}
+
+	return plan, currentStatus, seatCount, baseAmount, perSeatAmount, billingCycle, nil
+}
+
+func setOrganizationStatusTx(ctx context.Context, tx superAdminTx, tenantID string, isActive bool) error {
+	if isActive {
+		tag, err := tx.Exec(ctx, `UPDATE tenants SET deleted_at = NULL, updated_at = NOW() WHERE id = $1`, tenantID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return errOrganizationNotFound
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE billing_subscriptions
+			SET
+				status = CASE
+					WHEN metadata->>'tenant_deactivated' = 'true'
+						AND metadata->>'status_before_tenant_deactivation' IN ('trialing', 'active', 'past_due')
+					THEN (metadata->>'status_before_tenant_deactivation')::billing_subscription_status
+					ELSE status
+				END,
+				canceled_at = CASE
+					WHEN metadata->>'tenant_deactivated' = 'true'
+						AND metadata->>'status_before_tenant_deactivation' IN ('trialing', 'active', 'past_due')
+					THEN NULL
+					ELSE canceled_at
+				END,
+				next_invoice_at = CASE
+					WHEN metadata->>'tenant_deactivated' = 'true'
+						AND metadata->>'status_before_tenant_deactivation' IN ('trialing', 'active', 'past_due')
+						AND next_invoice_at IS NULL
+					THEN NOW() + INTERVAL '30 days'
+					ELSE next_invoice_at
+				END,
+				metadata = COALESCE(metadata, '{}'::jsonb)
+					- 'tenant_deactivated'
+					- 'status_before_tenant_deactivation'
+					- 'deactivated_at',
+				updated_at = NOW()
+			WHERE tenant_id = $1
+		`, tenantID); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	tag, err := tx.Exec(ctx, `UPDATE tenants SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1`, tenantID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errOrganizationNotFound
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE auth_sessions
+		SET revoked_at = NOW()
+		WHERE tenant_id = $1 AND revoked_at IS NULL
+	`, tenantID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE billing_subscriptions
+		SET
+			status = CASE
+				WHEN status IN ('trialing', 'active', 'past_due') THEN 'canceled'::billing_subscription_status
+				ELSE status
+			END,
+			canceled_at = CASE
+				WHEN status IN ('trialing', 'active', 'past_due') THEN NOW()
+				ELSE canceled_at
+			END,
+			next_invoice_at = NULL,
+			metadata = COALESCE(metadata, '{}'::jsonb)
+				|| jsonb_build_object(
+					'tenant_deactivated', true,
+					'status_before_tenant_deactivation', status::text,
+					'deactivated_at', NOW()
+				),
+			updated_at = NOW()
+		WHERE tenant_id = $1
+	`, tenantID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func loadBillableSubscription(ctx context.Context, tx superAdminTx, tenantID string, subscriptionID **uuid.UUID, seatCount, baseAmount, perSeatAmount *int) error {
+	err := tx.QueryRow(ctx, `
+		SELECT bs.id, bs.seat_count, bs.base_amount_cents, bs.per_seat_amount_cents
+		FROM tenants t
+		JOIN billing_subscriptions bs ON bs.tenant_id = t.id
+		WHERE t.id = $1
+		  AND t.deleted_at IS NULL
+		  AND bs.status IN ('trialing', 'active', 'past_due')
+	`, tenantID).Scan(subscriptionID, seatCount, baseAmount, perSeatAmount)
+	if err == pgx.ErrNoRows {
+		var exists bool
+		if lookupErr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenants WHERE id = $1 AND deleted_at IS NULL)`, tenantID).Scan(&exists); lookupErr != nil {
+			return lookupErr
+		}
+		if !exists {
+			return errOrganizationNotFound
+		}
+	}
+	return err
 }

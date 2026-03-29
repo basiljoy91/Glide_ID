@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/mail"
 	"regexp"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ import (
 )
 
 // ProvisionOrganization handles the onboarding provisioning request
-func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
+func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emailSvc services.EmailService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req struct {
 			Organization struct {
@@ -44,6 +45,7 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 				Email string `json:"email"`
 				Role  string `json:"role"`
 			} `json:"team_members"`
+			EmailVerificationID string `json:"email_verification_id"`
 		}
 
 		if err := c.BodyParser(&req); err != nil {
@@ -66,6 +68,11 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 		if req.Admin.Email == "" || req.Admin.FirstName == "" || req.Admin.LastName == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Admin details are required",
+			})
+		}
+		if req.EmailVerificationID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Admin email must be verified before provisioning",
 			})
 		}
 		if req.Admin.AuthMethod == "password" && req.Admin.Password == "" {
@@ -198,8 +205,28 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("Failed to create kiosk: %v", err)})
 		}
 
+		if err := authSvc.ConsumeEmailVerificationChallengeTx(ctx, tx, req.EmailVerificationID, req.Admin.Email, "onboarding_admin"); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Admin email verification is missing or expired"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to finalize admin email verification"})
+		}
+
 		if err := tx.Commit(ctx); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to commit transaction"})
+		}
+
+		if emailSvc != nil {
+			_ = emailSvc.SendEmail(ctx, services.EmailMessage{
+				To:      []string{req.Admin.Email},
+				Subject: "Your Glide ID workspace is ready",
+				HTMLContent: fmt.Sprintf(
+					"<p>Hi %s,</p><p>Your Glide ID organization <strong>%s</strong> has been provisioned successfully.</p><p>Your kiosk code is <strong>%s</strong>.</p><p>You can now sign in to your admin workspace.</p>",
+					req.Admin.FirstName,
+					req.Organization.Name,
+					kioskCode,
+				),
+			})
 		}
 
 		// Note: team member invites not persisted yet (no invites table in schema)
@@ -209,6 +236,71 @@ func ProvisionOrganization(db *pgxpool.Pool) fiber.Handler {
 			"kioskCode":   kioskCode,
 			"adminUserId": adminUserID.String(),
 			"message":     "Organization provisioned successfully",
+		})
+	}
+}
+
+func StartOnboardingEmailVerification(authSvc *services.AuthService, emailSvc services.EmailService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if emailSvc == nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Email delivery is not configured"})
+		}
+
+		var req struct {
+			Email string `json:"email"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+		req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+		if _, err := mail.ParseAddress(req.Email); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "A valid email address is required"})
+		}
+
+		challengeID, code, expiresAt, err := authSvc.CreateEmailVerificationChallenge(c.Context(), req.Email, "onboarding_admin", 10*time.Minute, c.IP())
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create verification code"})
+		}
+		if err := emailSvc.SendEmail(c.Context(), services.EmailMessage{
+			To:      []string{req.Email},
+			Subject: "Verify your Glide ID onboarding email",
+			HTMLContent: fmt.Sprintf(
+				"<p>Your Glide ID verification code is <strong>%s</strong>.</p><p>Enter this code to continue onboarding. It expires at %s.</p>",
+				code,
+				expiresAt.Format(time.RFC1123),
+			),
+		}); err != nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Failed to deliver verification code"})
+		}
+
+		return c.JSON(fiber.Map{
+			"challenge_id": challengeID,
+			"expires_at":   expiresAt,
+		})
+	}
+}
+
+func VerifyOnboardingEmailVerification(authSvc *services.AuthService) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req struct {
+			ChallengeID string `json:"challenge_id"`
+			Email       string `json:"email"`
+			Code        string `json:"code"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+		}
+		req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+		if req.ChallengeID == "" || req.Email == "" || strings.TrimSpace(req.Code) == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "challenge_id, email and code are required"})
+		}
+		if err := authSvc.VerifyEmailVerificationChallenge(c.Context(), req.ChallengeID, req.Email, strings.TrimSpace(req.Code), "onboarding_admin"); err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid or expired verification code"})
+		}
+		return c.JSON(fiber.Map{
+			"verified":     true,
+			"challenge_id": req.ChallengeID,
+			"email":        req.Email,
 		})
 	}
 }

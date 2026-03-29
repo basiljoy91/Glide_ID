@@ -85,8 +85,9 @@ func (s *UserService) GetUser(ctx context.Context, tenantID, userID string) (*mo
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
 			last_login_at, manager_id, employment_type, work_location, cost_center,
 			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
-		FROM users
-		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+		FROM users u
+		JOIN tenants t ON t.id = u.tenant_id
+		WHERE u.id = $1 AND u.tenant_id = $2 AND u.deleted_at IS NULL AND t.deleted_at IS NULL
 	`, userID, tenantID), user)
 
 	if err != nil {
@@ -291,10 +292,12 @@ func (s *UserService) FindLoginUserByEmail(ctx context.Context, email string) (*
 			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
 			last_login_at, manager_id, employment_type, work_location, cost_center,
 			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
-		FROM users
-		WHERE LOWER(email) = LOWER($1)
-		  AND deleted_at IS NULL
-		ORDER BY created_at ASC
+		FROM users u
+		JOIN tenants t ON t.id = u.tenant_id
+		WHERE LOWER(u.email) = LOWER($1)
+		  AND u.deleted_at IS NULL
+		  AND t.deleted_at IS NULL
+		ORDER BY u.created_at ASC
 		LIMIT 2
 	`, email)
 	if err != nil {
@@ -334,13 +337,21 @@ func (s *UserService) FindLoginUserByEmail(ctx context.Context, email string) (*
 
 // UpdateLastLogin records a successful sign-in timestamp for a user.
 func (s *UserService) UpdateLastLogin(ctx context.Context, tenantID, userID string) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE users
+	tag, err := s.db.Exec(ctx, `
+		UPDATE users u
 		SET last_login_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+		FROM tenants t
+		WHERE u.id = $1
+		  AND u.tenant_id = $2
+		  AND u.deleted_at IS NULL
+		  AND t.id = u.tenant_id
+		  AND t.deleted_at IS NULL
 	`, userID, tenantID)
 	if err != nil {
 		return fmt.Errorf("failed to update last login: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("failed to update last login: %w", ErrUserNotFound)
 	}
 	return nil
 }

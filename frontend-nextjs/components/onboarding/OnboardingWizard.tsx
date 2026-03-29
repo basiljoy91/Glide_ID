@@ -23,6 +23,9 @@ export interface OnboardingData {
   password?: string
   ssoProvider?: string
   ssoEmail?: string
+  emailVerificationChallengeId?: string
+  emailVerified?: boolean
+  emailVerifiedAt?: string
 
   // Step 3: Team Setup
   teamMembers: Array<{
@@ -47,6 +50,7 @@ export function OnboardingWizard() {
     adminLastName: '',
     adminPhone: '',
     authMethod: 'password',
+    emailVerified: false,
     teamMembers: [],
   })
 
@@ -71,6 +75,10 @@ export function OnboardingWizard() {
     } else if (currentStep === 2) {
       if (!data.adminEmail || !data.adminFirstName || !data.adminLastName) {
         toast.error('Please fill in all required fields')
+        return
+      }
+      if (!data.emailVerified || !data.emailVerificationChallengeId) {
+        toast.error('Please verify the admin email address before continuing')
         return
       }
       if (data.authMethod === 'password' && !data.password) {
@@ -208,6 +216,7 @@ async function provisionOrganization(data: OnboardingData) {
         sso_provider: data.ssoProvider,
       },
       team_members: data.teamMembers,
+      email_verification_id: data.emailVerificationChallengeId,
     }),
   })
 
@@ -218,4 +227,3 @@ async function provisionOrganization(data: OnboardingData) {
 
   return response.json()
 }
-

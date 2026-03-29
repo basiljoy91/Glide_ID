@@ -71,10 +71,13 @@ func HMACAuth(db *pgxpool.Pool, maxSkewSeconds int) fiber.Handler {
 		var status string
 
 		err := db.QueryRow(c.Context(), `
-			SELECT id, tenant_id, hmac_secret, status
-			FROM kiosks
-			WHERE code = $1 AND status = 'active'
-		`, kioskCode).Scan(&kioskID, &tenantID, &hmacSecret, &status)
+				SELECT k.id, k.tenant_id, k.hmac_secret, k.status
+				FROM kiosks k
+				JOIN tenants t ON t.id = k.tenant_id
+				WHERE k.code = $1
+				  AND k.status = 'active'
+				  AND t.deleted_at IS NULL
+			`, kioskCode).Scan(&kioskID, &tenantID, &hmacSecret, &status)
 
 		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{

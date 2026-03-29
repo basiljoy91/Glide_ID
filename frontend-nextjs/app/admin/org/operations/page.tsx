@@ -99,19 +99,30 @@ interface AttendanceOpsSettings {
   exception_sla_hours: number
 }
 
+const defaultAttendanceOpsSettings: AttendanceOpsSettings = {
+  allow_remote_attendance: false,
+  geofencing_enabled: false,
+  geofence_latitude: null,
+  geofence_longitude: null,
+  geofence_radius_meters: 200,
+  break_tracking_enabled: true,
+  exception_sla_hours: 24,
+}
+
+const normalizeAttendanceOpsSettings = (
+  value: Partial<AttendanceOpsSettings> | null | undefined
+): AttendanceOpsSettings => ({
+  ...defaultAttendanceOpsSettings,
+  ...(value || {}),
+})
+
 export default function AttendanceOperationsPage() {
   const { user, token, isAuthenticated } = useAuthStore()
   const router = useRouter()
   const [isLoading, setIsLoading] = useState(true)
   const [users, setUsers] = useState<UserOption[]>([])
   const [settings, setSettings] = useState<AttendanceOpsSettings>({
-    allow_remote_attendance: false,
-    geofencing_enabled: false,
-    geofence_latitude: null,
-    geofence_longitude: null,
-    geofence_radius_meters: 200,
-    break_tracking_enabled: true,
-    exception_sla_hours: 24,
+    ...defaultAttendanceOpsSettings,
   })
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequestRow[]>([])
   const [regularizations, setRegularizations] = useState<RegularizationRow[]>([])
@@ -173,7 +184,11 @@ export default function AttendanceOperationsPage() {
         fetch(`${base}/api/v1/reports/anomalies?state=unresolved&limit=50`, { headers }),
       ])
 
-      if (settingsResp.ok) setSettings(await settingsResp.json())
+      if (settingsResp.ok) {
+        setSettings(normalizeAttendanceOpsSettings(await settingsResp.json()))
+      } else {
+        setSettings(defaultAttendanceOpsSettings)
+      }
       if (leaveResp.ok) setLeaveRequests(await leaveResp.json())
       if (regResp.ok) setRegularizations(await regResp.json())
       if (overtimeResp.ok) setOvertimeRequests(await overtimeResp.json())
@@ -202,7 +217,7 @@ export default function AttendanceOperationsPage() {
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(data.error || 'Failed to save operations settings')
       toast.success('Operations settings updated')
-      setSettings(data)
+      setSettings(normalizeAttendanceOpsSettings(data))
     } catch (e: any) {
       toast.error(e.message || 'Failed to save operations settings')
     }
@@ -235,13 +250,31 @@ export default function AttendanceOperationsPage() {
   }
 
   const createShift = async () => {
+    if (!shiftForm.user_id.trim()) {
+      toast.error('Select an employee for the shift assignment')
+      return
+    }
+    if (!shiftForm.shift_name.trim()) {
+      toast.error('Shift name is required')
+      return
+    }
+    if (!shiftForm.start_date || !shiftForm.end_date) {
+      toast.error('Shift start and end dates are required')
+      return
+    }
+    const workDays = shiftForm.work_days.split(',').map((item) => item.trim()).filter(Boolean)
+    if (workDays.length === 0) {
+      toast.error('Select at least one work day')
+      return
+    }
     try {
       const resp = await fetch(`${base}/api/v1/attendance-ops/shifts`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
           ...shiftForm,
-          work_days: shiftForm.work_days.split(',').map((item) => item.trim()).filter(Boolean),
+          shift_name: shiftForm.shift_name.trim(),
+          work_days: workDays,
           notes: shiftForm.notes || null,
         }),
       })

@@ -69,7 +69,7 @@ export function Step4Provisioning({ data }: Step4Props) {
         <h3 className="font-semibold mb-4">Next Steps</h3>
         <ol className="space-y-2 list-decimal list-inside text-sm text-muted-foreground">
           <li>Save your kiosk code in a secure location</li>
-          <li>Check your email for account verification</li>
+          <li>Check your email for the setup confirmation</li>
           <li>Log in to your admin dashboard</li>
           <li>Add departments and employees</li>
           <li>Configure your first kiosk device</li>

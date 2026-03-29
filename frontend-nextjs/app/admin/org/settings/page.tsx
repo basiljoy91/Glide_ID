@@ -93,6 +93,36 @@ const emptySettings: SettingsPayload = {
 
 const weekdayOptions = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 
+const normalizeSettingsPayload = (data: Partial<SettingsPayload> | null | undefined): SettingsPayload => ({
+  company_profile: {
+    ...emptySettings.company_profile,
+    ...(data?.company_profile || {}),
+  },
+  operational: {
+    ...emptySettings.operational,
+    ...(data?.operational || {}),
+    work_week: Array.isArray(data?.operational?.work_week)
+      ? data?.operational?.work_week
+      : emptySettings.operational.work_week,
+    holiday_calendar: Array.isArray(data?.operational?.holiday_calendar)
+      ? data?.operational?.holiday_calendar
+      : emptySettings.operational.holiday_calendar,
+  },
+  attendance_policy: {
+    ...emptySettings.attendance_policy,
+    ...(data?.attendance_policy || {}),
+  },
+  kiosk_defaults: {
+    ...emptySettings.kiosk_defaults,
+    ...(data?.kiosk_defaults || {}),
+  },
+  data_retention: {
+    ...emptySettings.data_retention,
+    ...(data?.data_retention || {}),
+  },
+  shift_templates: Array.isArray(data?.shift_templates) ? data.shift_templates : emptySettings.shift_templates,
+})
+
 export default function OrgSettingsPage() {
   const { isAuthenticated, user, token } = useAuthStore()
   const router = useRouter()
@@ -141,7 +171,7 @@ export default function OrgSettingsPage() {
         throw new Error(error.error || 'Failed to load settings')
       }
       const data = await resp.json()
-      setSettings({ ...emptySettings, ...data, shift_templates: Array.isArray(data.shift_templates) ? data.shift_templates : [] })
+      setSettings(normalizeSettingsPayload(data))
     } catch (error: any) {
       toast.error(error.message || 'Failed to load settings')
     } finally {
@@ -162,7 +192,7 @@ export default function OrgSettingsPage() {
         throw new Error(error.error || 'Failed to save settings')
       }
       const data = await resp.json()
-      setSettings({ ...emptySettings, ...data, shift_templates: Array.isArray(data.shift_templates) ? data.shift_templates : [] })
+      setSettings(normalizeSettingsPayload(data))
       toast.success('Organization settings updated')
     } catch (error: any) {
       toast.error(error.message || 'Failed to save settings')
