@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,13 +15,14 @@ type DB struct {
 }
 
 func NewConnection(databaseURL string) (*DB, error) {
+	databaseURL = normalizeDatabaseURL(databaseURL)
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse database URL: %w", err)
 	}
 
-	config.MaxConns = 25
-	config.MinConns = 5
+	config.MaxConns = 15
+	config.MinConns = 1
 	config.MaxConnLifetime = time.Hour
 	config.MaxConnIdleTime = time.Minute * 30
 	config.HealthCheckPeriod = time.Minute
@@ -30,7 +33,7 @@ func NewConnection(databaseURL string) (*DB, error) {
 	}
 
 	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	if err := pool.Ping(ctx); err != nil {
@@ -38,6 +41,24 @@ func NewConnection(databaseURL string) (*DB, error) {
 	}
 
 	return &DB{Pool: pool}, nil
+}
+
+func normalizeDatabaseURL(databaseURL string) string {
+	if databaseURL == "" || strings.Contains(strings.ToLower(databaseURL), "sslmode=") {
+		return databaseURL
+	}
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return databaseURL
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if strings.Contains(host, "supabase.com") || strings.Contains(host, "pooler.") {
+		query := parsed.Query()
+		query.Set("sslmode", "require")
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
+	}
+	return databaseURL
 }
 
 func (db *DB) Close() {
@@ -61,4 +82,3 @@ func (db *DB) SetAIServiceContext(ctx context.Context) error {
 	_, err := db.Pool.Exec(ctx, "SET LOCAL app.is_ai_service = 'true'")
 	return err
 }
-

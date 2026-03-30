@@ -80,11 +80,11 @@ func (s *UserService) CreateUserTx(ctx context.Context, tx interface {
 func (s *UserService) GetUser(ctx context.Context, tenantID, userID string) (*models.User, error) {
 	user := &models.User{}
 	err := scanUserRow(s.db.QueryRow(ctx, `
-		SELECT id, tenant_id, employee_id, email, phone, first_name, last_name,
-			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
-			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, manager_id, employment_type, work_location, cost_center,
-			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
+		SELECT u.id, u.tenant_id, u.employee_id, u.email, u.phone, u.first_name, u.last_name,
+			u.department_id, u.designation, u.date_of_joining, u.shift_start_time, u.shift_end_time,
+			u.shift_length_hours, u.role, u.is_active, u.data_privacy_consent, u.consent_date,
+			u.last_login_at, u.manager_id, u.employment_type, u.work_location, u.cost_center,
+			u.invite_status, u.invite_sent_at, u.offboarded_at, u.offboarding_reason, u.created_at, u.updated_at, u.deleted_at
 		FROM users u
 		JOIN tenants t ON t.id = u.tenant_id
 		WHERE u.id = $1 AND u.tenant_id = $2 AND u.deleted_at IS NULL AND t.deleted_at IS NULL
@@ -287,11 +287,11 @@ func (s *UserService) GetUserByEmail(ctx context.Context, tenantID, email string
 // FindLoginUserByEmail resolves a password-login user safely across tenants.
 func (s *UserService) FindLoginUserByEmail(ctx context.Context, email string) (*models.User, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, tenant_id, employee_id, email, password_hash, phone, first_name, last_name,
-			department_id, designation, date_of_joining, shift_start_time, shift_end_time,
-			shift_length_hours, role, is_active, data_privacy_consent, consent_date,
-			last_login_at, manager_id, employment_type, work_location, cost_center,
-			invite_status, invite_sent_at, offboarded_at, offboarding_reason, created_at, updated_at, deleted_at
+		SELECT u.id, u.tenant_id, u.employee_id, u.email, u.password_hash, u.phone, u.first_name, u.last_name,
+			u.department_id, u.designation, u.date_of_joining, u.shift_start_time, u.shift_end_time,
+			u.shift_length_hours, u.role, u.is_active, u.data_privacy_consent, u.consent_date,
+			u.last_login_at, u.manager_id, u.employment_type, u.work_location, u.cost_center,
+			u.invite_status, u.invite_sent_at, u.offboarded_at, u.offboarding_reason, u.created_at, u.updated_at, u.deleted_at
 		FROM users u
 		JOIN tenants t ON t.id = u.tenant_id
 		WHERE LOWER(u.email) = LOWER($1)
@@ -333,6 +333,24 @@ func (s *UserService) FindLoginUserByEmail(ctx context.Context, email string) (*
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrAmbiguousLoginUser, email)
 	}
+}
+
+func (s *UserService) HasDeactivatedTenantUserByEmail(ctx context.Context, email string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM users u
+			JOIN tenants t ON t.id = u.tenant_id
+			WHERE LOWER(u.email) = LOWER($1)
+			  AND u.deleted_at IS NULL
+			  AND t.deleted_at IS NOT NULL
+		)
+	`, email).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // UpdateLastLogin records a successful sign-in timestamp for a user.

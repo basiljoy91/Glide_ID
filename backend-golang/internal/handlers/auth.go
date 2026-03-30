@@ -1,10 +1,8 @@
 package handlers
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -14,8 +12,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 )
-
-var errInvalidLoginPassword = errors.New("invalid login password")
 
 // Login handles user login
 func Login(authSvc *services.AuthService, userSvc *services.UserService, adminSvc *services.AdminService, auditSvc *services.AuditService, emailSvc services.EmailService) fiber.Handler {
@@ -45,6 +41,12 @@ func Login(authSvc *services.AuthService, userSvc *services.UserService, adminSv
 					"error": "Multiple organizations use this email. Contact your administrator to consolidate access before using password login.",
 				})
 			}
+			hasDeactivatedTenantUser, lookupErr := userSvc.HasDeactivatedTenantUserByEmail(c.Context(), req.Email)
+			if lookupErr == nil && hasDeactivatedTenantUser {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "This organization is inactive. Contact a super administrator to reactivate it before signing in.",
+				})
+			}
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Invalid credentials",
 			})
@@ -72,14 +74,9 @@ func Login(authSvc *services.AuthService, userSvc *services.UserService, adminSv
 				"error": "Password login not enabled for this user",
 			})
 		}
-		if err := verifyLoginPassword(c.Context(), user, req.Password, userSvc.SetUserPasswordHash); err != nil {
-			if errors.Is(err, errInvalidLoginPassword) {
-				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-					"error": "Invalid credentials",
-				})
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to verify credentials",
+		if err := bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)); err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Invalid credentials",
 			})
 		}
 		mfaRequired, err := adminSvc.MFARequiredForRole(c.Context(), user.TenantID.String(), user.Role)
@@ -219,46 +216,4 @@ func finalizePasswordLogin(c *fiber.Ctx, authSvc *services.AuthService, userSvc 
 		"session_id": sessionID,
 		"user":       respUser,
 	})
-}
-
-func verifyLoginPassword(ctx context.Context, user *models.User, password string, upgradePasswordHash func(context.Context, string, string, string) error) error {
-	storedHash := ""
-	if user.PasswordHash != nil {
-		storedHash = strings.TrimSpace(*user.PasswordHash)
-	}
-	if storedHash == "" {
-		return errInvalidLoginPassword
-	}
-
-	switch err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password)); {
-	case err == nil:
-		if user.PasswordHash != nil && storedHash != *user.PasswordHash && upgradePasswordHash != nil {
-			if err := upgradePasswordHash(ctx, user.TenantID.String(), user.ID.String(), storedHash); err != nil {
-				return fmt.Errorf("normalize stored password hash: %w", err)
-			}
-		}
-		user.PasswordHash = &storedHash
-		return nil
-	case errors.Is(err, bcrypt.ErrMismatchedHashAndPassword):
-		return errInvalidLoginPassword
-	default:
-		if storedHash != password {
-			log.Printf("login password hash is not valid bcrypt for user=%s tenant=%s: %v", user.ID, user.TenantID, err)
-			return errInvalidLoginPassword
-		}
-
-		rehash, hashErr := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		if hashErr != nil {
-			return fmt.Errorf("upgrade legacy password hash: %w", hashErr)
-		}
-		upgradedHash := string(rehash)
-		if upgradePasswordHash != nil {
-			if err := upgradePasswordHash(ctx, user.TenantID.String(), user.ID.String(), upgradedHash); err != nil {
-				return fmt.Errorf("persist upgraded password hash: %w", err)
-			}
-		}
-		user.PasswordHash = &upgradedHash
-		log.Printf("migrated legacy plaintext password for user=%s tenant=%s", user.ID, user.TenantID)
-		return nil
-	}
 }
