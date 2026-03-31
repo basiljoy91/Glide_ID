@@ -70,20 +70,36 @@ export function Step4Provisioning({ data }: Step4Props) {
         <ol className="space-y-2 list-decimal list-inside text-sm text-muted-foreground">
           <li>Save your kiosk code in a secure location</li>
           <li>Check your email for the setup confirmation</li>
-          <li>Log in to your admin dashboard</li>
+          {data.teamMembersProvisioned ? (
+            <li>
+              {data.teamMembersProvisioned} team member account{data.teamMembersProvisioned === 1 ? '' : 's'} {data.teamMemberInvitesSent ? 'have invite emails waiting' : 'were created and can be managed from the admin dashboard'}
+            </li>
+          ) : null}
+          <li>Sign in to the admin portal with the account you just created</li>
           <li>Add departments and employees</li>
           <li>Configure your first kiosk device</li>
         </ol>
       </div>
 
+      {data.warnings && data.warnings.length > 0 ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-left text-sm text-amber-900">
+          <div className="font-semibold">Onboarding Notes</div>
+          <ul className="mt-2 list-disc pl-5 space-y-1">
+            {data.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {/* Action Buttons */}
       <div className="flex flex-col sm:flex-row gap-4 justify-center">
         <Link href="/admin/login">
-          <Button size="lg">Go to Admin Dashboard</Button>
+          <Button size="lg">Go to Admin Sign In</Button>
         </Link>
-        <Link href="/dashboard">
+        <Link href="/">
           <Button size="lg" variant="outline">
-            View Getting Started Guide
+            Return to Home
           </Button>
         </Link>
       </div>

@@ -29,6 +29,27 @@ const industries = [
   'Other',
 ]
 
+const planOptions = [
+  {
+    value: 'starter',
+    label: 'Starter',
+    description: 'Best for smaller teams getting set up quickly.',
+    capacity: 'Up to 25 employees, 1 kiosk',
+  },
+  {
+    value: 'professional',
+    label: 'Professional',
+    description: 'For growing organizations that need more capacity.',
+    capacity: 'Up to 250 employees, up to 10 kiosks',
+  },
+  {
+    value: 'enterprise',
+    label: 'Enterprise',
+    description: 'For large rollouts and complex admin/security requirements.',
+    capacity: 'Unlimited employees, enterprise-scale kiosk support',
+  },
+] as const
+
 export function Step1OrganizationDetails({ data, updateData }: Step1Props) {
   return (
     <div className="space-y-6">
@@ -89,11 +110,40 @@ export function Step1OrganizationDetails({ data, updateData }: Step1Props) {
             required
           />
           <p className="text-sm text-muted-foreground mt-1">
-            This helps us provision the right resources for your organization
+            We use this to size your initial seat count and validate the selected plan.
+          </p>
+        </div>
+
+        <div className="border-t pt-6">
+          <Label className="text-base font-semibold mb-4 block">Initial Plan *</Label>
+          <div className="grid gap-3 md:grid-cols-3">
+            {planOptions.map((plan) => {
+              const active = data.planTier === plan.value
+              return (
+                <button
+                  key={plan.value}
+                  type="button"
+                  onClick={() => updateData({ planTier: plan.value })}
+                  className={`rounded-lg border p-4 text-left transition-colors ${
+                    active
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:border-primary/50 hover:bg-muted/40'
+                  }`}
+                >
+                  <div className="font-semibold">{plan.label}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">{plan.description}</div>
+                  <div className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {plan.capacity}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Onboarding now provisions the selected plan and creates the initial billing subscription from it.
           </p>
         </div>
       </div>
     </div>
   )
 }
-

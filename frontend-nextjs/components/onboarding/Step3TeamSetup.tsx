@@ -16,26 +16,26 @@ interface Step3Props {
 const roles = [
   { value: 'org_admin', label: 'Organization Admin', description: 'Full access to all features' },
   { value: 'hr', label: 'HR Manager', description: 'Reports, users, leave management' },
-  { value: 'dept_manager', label: 'Department Manager', description: 'Access to assigned department only' },
 ]
 
 export function Step3TeamSetup({ data, updateData }: Step3Props) {
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<'org_admin' | 'hr' | 'dept_manager'>('hr')
+  const [role, setRole] = useState<'org_admin' | 'hr'>('hr')
 
   const addTeamMember = () => {
-    if (!email || !email.includes('@')) {
+    const normalizedEmail = email.trim().toLowerCase()
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
       toast.error('Please enter a valid email address')
       return
     }
 
-    if (data.teamMembers.some((m) => m.email === email)) {
+    if (data.teamMembers.some((m) => m.email.toLowerCase() === normalizedEmail)) {
       toast.error('This email is already added')
       return
     }
 
     updateData({
-      teamMembers: [...data.teamMembers, { email, role }],
+      teamMembers: [...data.teamMembers, { email: normalizedEmail, role }],
     })
     setEmail('')
     setRole('hr')
@@ -86,7 +86,7 @@ export function Step3TeamSetup({ data, updateData }: Step3Props) {
                 id="teamRole"
                 value={role}
                 onChange={(e) =>
-                  setRole(e.target.value as 'org_admin' | 'hr' | 'dept_manager')
+                  setRole(e.target.value as 'org_admin' | 'hr')
                 }
                 className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
@@ -145,6 +145,10 @@ export function Step3TeamSetup({ data, updateData }: Step3Props) {
               </div>
             ))}
           </div>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Team members added here are created during provisioning and receive email invitations when delivery is configured.
+            Department managers can be assigned later, after departments are created.
+          </p>
         </div>
 
         {data.teamMembers.length === 0 && (
@@ -159,4 +163,3 @@ export function Step3TeamSetup({ data, updateData }: Step3Props) {
     </div>
   )
 }
-

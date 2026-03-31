@@ -9,9 +9,11 @@ import (
 	"math/big"
 	"net/mail"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"enterprise-attendance-api/internal/config"
 	"enterprise-attendance-api/internal/services"
 
 	"github.com/gofiber/fiber/v2"
@@ -22,37 +24,97 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const onboardingAuthMethodPassword = "password"
+
+const (
+	onboardingVerificationCooldown   = 60 * time.Second
+	onboardingVerificationWindow     = time.Hour
+	onboardingVerificationMaxPerHour = 5
+)
+
+type onboardingProvisionRequest struct {
+	Organization struct {
+		Name               string `json:"name"`
+		Industry           string `json:"industry"`
+		EstimatedEmployees int    `json:"estimated_employees"`
+		PlanTier           string `json:"plan_tier"`
+	} `json:"organization"`
+	Admin struct {
+		Email       string `json:"email"`
+		FirstName   string `json:"first_name"`
+		LastName    string `json:"last_name"`
+		Phone       string `json:"phone"`
+		AuthMethod  string `json:"auth_method"`
+		Password    string `json:"password,omitempty"`
+		SSOEmail    string `json:"sso_email,omitempty"`
+		SSOProvider string `json:"sso_provider,omitempty"`
+	} `json:"admin"`
+	TeamMembers         []onboardingTeamMemberRequest `json:"team_members"`
+	EmailVerificationID string                        `json:"email_verification_id"`
+}
+
+type onboardingTeamMemberRequest struct {
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}
+
+type provisionedOnboardingTeamMember struct {
+	Email             string
+	Role              string
+	TemporaryPassword string
+}
+
+type onboardingPlanConfig struct {
+	MaxUsers           int
+	MaxKiosks          int
+	BaseAmountCents    int
+	PerSeatAmountCents int
+	BillingCycle       string
+}
+
+var onboardingPlanConfigs = map[string]onboardingPlanConfig{
+	"starter": {
+		MaxUsers:           25,
+		MaxKiosks:          1,
+		BaseAmountCents:    19900,
+		PerSeatAmountCents: 0,
+		BillingCycle:       "monthly",
+	},
+	"professional": {
+		MaxUsers:           250,
+		MaxKiosks:          10,
+		BaseAmountCents:    49900,
+		PerSeatAmountCents: 0,
+		BillingCycle:       "monthly",
+	},
+	"enterprise": {
+		MaxUsers:           1000000,
+		MaxKiosks:          1000,
+		BaseAmountCents:    99900,
+		PerSeatAmountCents: 0,
+		BillingCycle:       "monthly",
+	},
+}
+
 // ProvisionOrganization handles the onboarding provisioning request
 func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emailSvc services.EmailService) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		var req struct {
-			Organization struct {
-				Name               string `json:"name"`
-				Industry           string `json:"industry"`
-				EstimatedEmployees int    `json:"estimated_employees"`
-			} `json:"organization"`
-			Admin struct {
-				Email       string `json:"email"`
-				FirstName   string `json:"first_name"`
-				LastName    string `json:"last_name"`
-				Phone       string `json:"phone"`
-				AuthMethod  string `json:"auth_method"` // "sso" or "password"
-				Password    string `json:"password,omitempty"`
-				SSOEmail    string `json:"sso_email,omitempty"`
-				SSOProvider string `json:"sso_provider,omitempty"`
-			} `json:"admin"`
-			TeamMembers []struct {
-				Email string `json:"email"`
-				Role  string `json:"role"`
-			} `json:"team_members"`
-			EmailVerificationID string `json:"email_verification_id"`
-		}
+		var req onboardingProvisionRequest
 
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Invalid request body",
 			})
 		}
+		req.Organization.Name = strings.TrimSpace(req.Organization.Name)
+		req.Organization.Industry = strings.TrimSpace(req.Organization.Industry)
+		req.Organization.PlanTier = normalizeOnboardingPlanTier(req.Organization.PlanTier)
+		req.Admin.Email = strings.TrimSpace(strings.ToLower(req.Admin.Email))
+		req.Admin.FirstName = strings.TrimSpace(req.Admin.FirstName)
+		req.Admin.LastName = strings.TrimSpace(req.Admin.LastName)
+		req.Admin.Phone = strings.TrimSpace(req.Admin.Phone)
+		req.Admin.AuthMethod = normalizeOnboardingAuthMethod(req.Admin.AuthMethod)
+		req.Admin.Password = strings.TrimSpace(req.Admin.Password)
 
 		// Validate required fields
 		if req.Organization.Name == "" {
@@ -65,6 +127,12 @@ func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emai
 				"error": "Industry is required",
 			})
 		}
+		planConfig, err := validateOnboardingPlan(req.Organization.PlanTier, req.Organization.EstimatedEmployees)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
 		if req.Admin.Email == "" || req.Admin.FirstName == "" || req.Admin.LastName == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Admin details are required",
@@ -75,14 +143,20 @@ func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emai
 				"error": "Admin email must be verified before provisioning",
 			})
 		}
-		if req.Admin.AuthMethod == "password" && req.Admin.Password == "" {
+		if err := validateOnboardingAuthMethod(req.Admin.AuthMethod); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Password is required for password authentication",
+				"error": err.Error(),
 			})
 		}
-		if req.Admin.AuthMethod == "sso" && req.Admin.SSOEmail == "" {
+		if req.Admin.Password == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "SSO email is required for SSO authentication",
+				"error": "Password is required for onboarding",
+			})
+		}
+		teamMembers, err := normalizeOnboardingTeamMembers(req.TeamMembers, req.Admin.Email)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
 			})
 		}
 
@@ -99,38 +173,29 @@ func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emai
 		}
 
 		adminDomain := emailDomain(req.Admin.Email)
-		ssoDomain := ""
-		if req.Admin.AuthMethod == "sso" {
-			ssoDomain = emailDomain(req.Admin.SSOEmail)
-		}
 
 		settings := map[string]any{
 			"industry":           req.Organization.Industry,
 			"estimatedEmployees": req.Organization.EstimatedEmployees,
 			"adminEmailDomain":   adminDomain,
 		}
-		if ssoDomain != "" {
-			settings["sso_domain"] = ssoDomain
-		}
 		settingsJSON, _ := json.Marshal(settings)
 
 		// password hash
 		var passwordHash *string
-		if req.Admin.AuthMethod == "password" {
-			if err := services.ValidatePasswordWithPolicy(services.DefaultPasswordPolicy(), req.Admin.Password); err != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": err.Error(),
-				})
-			}
-			hash, err := bcrypt.GenerateFromPassword([]byte(req.Admin.Password), bcrypt.DefaultCost)
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "Failed to hash password",
-				})
-			}
-			h := string(hash)
-			passwordHash = &h
+		if err := services.ValidatePasswordWithPolicy(services.DefaultPasswordPolicy(), req.Admin.Password); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
 		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.Admin.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to hash password",
+			})
+		}
+		h := string(hash)
+		passwordHash = &h
 
 		// Generate unique kiosk_code (10 digits) and slug
 		var kioskCode string
@@ -157,15 +222,10 @@ func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emai
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to generate kiosk code"})
 			}
 
-			ssoProvider := req.Admin.SSOProvider
-			if req.Admin.AuthMethod != "sso" {
-				ssoProvider = ""
-			}
-
 			_, err = tx.Exec(ctx, `
-				INSERT INTO tenants (id, name, slug, subscription_tier, kiosk_code, settings, sso_provider)
-				VALUES ($1, $2, $3, $4, $5, $6::jsonb, NULLIF($7, ''))
-			`, tenantID, req.Organization.Name, slug, "starter", kioskCode, string(settingsJSON), ssoProvider)
+					INSERT INTO tenants (id, name, slug, subscription_tier, max_users, max_kiosks, kiosk_code, settings, sso_provider)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NULLIF($9, ''))
+				`, tenantID, req.Organization.Name, slug, req.Organization.PlanTier, req.Organization.EstimatedEmployees, planConfig.MaxKiosks, kioskCode, string(settingsJSON), "")
 
 			if err == nil {
 				break
@@ -189,6 +249,55 @@ func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emai
 		`, adminUserID, tenantID, employeeID, req.Admin.Email, req.Admin.Phone, req.Admin.FirstName, req.Admin.LastName, "org_admin", passwordHash, now)
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("Failed to create admin user: %v", err)})
+		}
+
+		_, err = tx.Exec(ctx, `
+				INSERT INTO billing_subscriptions (
+					tenant_id, plan_tier, status, billing_cycle, seat_count, base_amount_cents,
+					per_seat_amount_cents, current_period_start, current_period_end, next_invoice_at, created_at, updated_at
+				)
+				VALUES (
+					$1, $2::subscription_tier, 'active'::billing_subscription_status, $3, $4, $5,
+					$6, NOW(), NOW() + INTERVAL '30 days', NOW() + INTERVAL '30 days', $7, $7
+				)
+			`, tenantID, req.Organization.PlanTier, planConfig.BillingCycle, req.Organization.EstimatedEmployees, planConfig.BaseAmountCents, planConfig.PerSeatAmountCents, now)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to initialize billing subscription"})
+		}
+
+		provisionedTeamMembers := make([]provisionedOnboardingTeamMember, 0, len(teamMembers))
+		inviteStatus := "created"
+		var inviteSentAt *time.Time
+		if emailSvc != nil {
+			inviteStatus = "sent"
+			inviteSentAt = &now
+		}
+		for index, member := range teamMembers {
+			tempPassword, err := generateOnboardingTemporaryPassword(16)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to generate team member credentials"})
+			}
+			hash, err := bcrypt.GenerateFromPassword([]byte(tempPassword), bcrypt.DefaultCost)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to secure team member credentials"})
+			}
+			teamUserID := uuid.New()
+			teamEmployeeID := fmt.Sprintf("ADMIN%03d", index+2)
+			_, err = tx.Exec(ctx, `
+				INSERT INTO users (
+					id, tenant_id, employee_id, email, first_name, last_name, date_of_joining, role, password_hash,
+					is_active, data_privacy_consent, invite_status, invite_sent_at, created_at, updated_at
+				)
+				VALUES ($1,$2,$3,$4,$5,$6,CURRENT_DATE,$7,$8,true,false,$9,$10,$11,$11)
+			`, teamUserID, tenantID, teamEmployeeID, member.Email, "Invited", "Admin", member.Role, string(hash), inviteStatus, inviteSentAt, now)
+			if err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("Failed to create team member: %v", err)})
+			}
+			provisionedTeamMembers = append(provisionedTeamMembers, provisionedOnboardingTeamMember{
+				Email:             member.Email,
+				Role:              member.Role,
+				TemporaryPassword: tempPassword,
+			})
 		}
 
 		// Create initial kiosk record tied to tenant kiosk_code
@@ -228,14 +337,39 @@ func ProvisionOrganization(db *pgxpool.Pool, authSvc *services.AuthService, emai
 				),
 			})
 		}
-
-		// Note: team member invites not persisted yet (no invites table in schema)
+		warnings := []string{}
+		if len(provisionedTeamMembers) > 0 {
+			loginURL := buildOnboardingAdminLoginURL()
+			if emailSvc != nil {
+				for _, member := range provisionedTeamMembers {
+					if err := emailSvc.SendEmail(ctx, services.EmailMessage{
+						To:      []string{member.Email},
+						Subject: fmt.Sprintf("You've been added to %s on Glide ID", req.Organization.Name),
+						HTMLContent: fmt.Sprintf(
+							"<p>You have been added to <strong>%s</strong> as <strong>%s</strong>.</p><p>Sign in at <a href=\"%s\">%s</a> with this temporary password:</p><p><strong>%s</strong></p><p>For security, coordinate with your organization admin to rotate this password after your first sign-in.</p>",
+							req.Organization.Name,
+							member.Role,
+							loginURL,
+							loginURL,
+							member.TemporaryPassword,
+						),
+					}); err != nil {
+						warnings = append(warnings, fmt.Sprintf("Failed to send invite email to %s", member.Email))
+					}
+				}
+			} else {
+				warnings = append(warnings, "Team member accounts were created, but invite emails were not sent because email delivery is not configured.")
+			}
+		}
 		return c.JSON(fiber.Map{
-			"success":     true,
-			"tenantId":    tenantID.String(),
-			"kioskCode":   kioskCode,
-			"adminUserId": adminUserID.String(),
-			"message":     "Organization provisioned successfully",
+			"success":                true,
+			"tenantId":               tenantID.String(),
+			"kioskCode":              kioskCode,
+			"adminUserId":            adminUserID.String(),
+			"teamMembersProvisioned": len(provisionedTeamMembers),
+			"teamMemberInvitesSent":  emailSvc != nil,
+			"message":                "Organization provisioned successfully",
+			"warnings":               warnings,
 		})
 	}
 }
@@ -255,6 +389,22 @@ func StartOnboardingEmailVerification(authSvc *services.AuthService, emailSvc se
 		req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 		if _, err := mail.ParseAddress(req.Email); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "A valid email address is required"})
+		}
+		retryAfter, capped, err := authSvc.CheckEmailVerificationRateLimit(c.Context(), req.Email, "onboarding_admin", onboardingVerificationCooldown, onboardingVerificationWindow, onboardingVerificationMaxPerHour)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to validate verification rate limit"})
+		}
+		if capped {
+			c.Set("Retry-After", strconv.Itoa(int(onboardingVerificationWindow.Seconds())))
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "Too many verification codes requested. Please try again later."})
+		}
+		if retryAfter > 0 {
+			waitSeconds := int(retryAfter.Seconds())
+			if waitSeconds < 1 {
+				waitSeconds = 1
+			}
+			c.Set("Retry-After", strconv.Itoa(waitSeconds))
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": fmt.Sprintf("Please wait %d seconds before requesting another verification code.", waitSeconds)})
 		}
 
 		challengeID, code, expiresAt, err := authSvc.CreateEmailVerificationChallenge(c.Context(), req.Email, "onboarding_admin", 10*time.Minute, c.IP())
@@ -353,4 +503,95 @@ func isUniqueViolation(err error) bool {
 		return pgErr.Code == "23505"
 	}
 	return strings.Contains(err.Error(), "duplicate key value violates unique constraint")
+}
+
+func normalizeOnboardingAuthMethod(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func validateOnboardingAuthMethod(authMethod string) error {
+	switch authMethod {
+	case onboardingAuthMethodPassword:
+		return nil
+	case "sso":
+		return fmt.Errorf("SSO onboarding is not available yet. Use password authentication for now")
+	default:
+		return fmt.Errorf("auth_method must be 'password'")
+	}
+}
+
+func normalizeOnboardingPlanTier(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func validateOnboardingPlan(planTier string, estimatedEmployees int) (onboardingPlanConfig, error) {
+	config, ok := onboardingPlanConfigs[planTier]
+	if !ok {
+		return onboardingPlanConfig{}, fmt.Errorf("plan_tier must be 'starter', 'professional', or 'enterprise'")
+	}
+	if estimatedEmployees <= 0 {
+		return onboardingPlanConfig{}, fmt.Errorf("estimated_employees must be greater than zero")
+	}
+	if planTier != "enterprise" && estimatedEmployees > config.MaxUsers {
+		return onboardingPlanConfig{}, fmt.Errorf("%s supports up to %d employees. Choose a higher plan or lower the estimated employee count", planTier, config.MaxUsers)
+	}
+	return config, nil
+}
+
+func normalizeOnboardingTeamMembers(teamMembers []onboardingTeamMemberRequest, adminEmail string) ([]onboardingTeamMemberRequest, error) {
+	if len(teamMembers) == 0 {
+		return nil, nil
+	}
+	normalized := make([]onboardingTeamMemberRequest, 0, len(teamMembers))
+	seen := map[string]struct{}{
+		strings.ToLower(strings.TrimSpace(adminEmail)): {},
+	}
+	for _, member := range teamMembers {
+		member.Email = strings.TrimSpace(strings.ToLower(member.Email))
+		member.Role = strings.ToLower(strings.TrimSpace(member.Role))
+		if member.Email == "" {
+			return nil, fmt.Errorf("team member email is required")
+		}
+		if _, err := mail.ParseAddress(member.Email); err != nil {
+			return nil, fmt.Errorf("team member email must be valid")
+		}
+		switch member.Role {
+		case "org_admin", "hr":
+		case "dept_manager":
+			return nil, fmt.Errorf("department managers can be assigned after departments are created")
+		default:
+			return nil, fmt.Errorf("team member role must be 'org_admin' or 'hr'")
+		}
+		if _, exists := seen[member.Email]; exists {
+			return nil, fmt.Errorf("team member emails must be unique and cannot match the primary admin email")
+		}
+		seen[member.Email] = struct{}{}
+		normalized = append(normalized, member)
+	}
+	return normalized, nil
+}
+
+func generateOnboardingTemporaryPassword(length int) (string, error) {
+	for attempt := 0; attempt < 10; attempt++ {
+		password, err := generateTempPassword(length)
+		if err != nil {
+			return "", err
+		}
+		if err := services.ValidatePasswordWithPolicy(services.DefaultPasswordPolicy(), password); err == nil {
+			return password, nil
+		}
+	}
+	return "", errors.New("unable to generate onboarding password that satisfies policy")
+}
+
+func buildOnboardingAdminLoginURL() string {
+	cfg := config.Load()
+	baseURL := ""
+	if len(cfg.CORSOrigins) > 0 {
+		baseURL = strings.TrimRight(strings.TrimSpace(cfg.CORSOrigins[0]), "/")
+	}
+	if baseURL == "" {
+		baseURL = "http://localhost:3000"
+	}
+	return baseURL + "/admin/login"
 }

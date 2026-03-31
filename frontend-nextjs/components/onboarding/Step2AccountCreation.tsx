@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import { OnboardingData } from './OnboardingWizard'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Shield, Key } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import toast from 'react-hot-toast'
@@ -14,14 +13,6 @@ interface Step2Props {
   updateData: (updates: Partial<OnboardingData>) => void
 }
 
-const ssoProviders = [
-  { value: 'okta', label: 'Okta' },
-  { value: 'azure', label: 'Microsoft Azure AD' },
-  { value: 'google', label: 'Google Workspace' },
-  { value: 'saml', label: 'Generic SAML 2.0' },
-  { value: 'oidc', label: 'Generic OIDC' },
-]
-
 export function Step2AccountCreation({ data, updateData }: Step2Props) {
   const [code, setCode] = useState('')
   const [isSendingCode, setIsSendingCode] = useState(false)
@@ -30,6 +21,16 @@ export function Step2AccountCreation({ data, updateData }: Step2Props) {
   useEffect(() => {
     setCode('')
   }, [data.adminEmail])
+
+  useEffect(() => {
+    if (data.authMethod !== 'password' || data.ssoEmail || data.ssoProvider) {
+      updateData({
+        authMethod: 'password',
+        ssoEmail: undefined,
+        ssoProvider: undefined,
+      })
+    }
+  }, [data.authMethod, data.ssoEmail, data.ssoProvider, updateData])
 
   const handleEmailChange = (email: string) => {
     updateData({
@@ -208,47 +209,29 @@ export function Step2AccountCreation({ data, updateData }: Step2Props) {
 
         <div className="border-t pt-6">
           <Label className="text-base font-semibold mb-4 block">
-            Authentication Method *
+            Authentication Method
           </Label>
-          <RadioGroup
-            value={data.authMethod}
-            onValueChange={(value) =>
-              updateData({ authMethod: value as 'sso' | 'password' })
-            }
-            className="space-y-4"
-          >
-            <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-muted/50 cursor-pointer">
-              <RadioGroupItem value="password" id="password" className="mt-1" />
-              <label
-                htmlFor="password"
-                className="flex-1 cursor-pointer space-y-1"
-              >
-                <div className="flex items-center space-x-2">
-                  <Key className="h-4 w-4" />
-                  <span className="font-medium">Password Authentication</span>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Create a secure password for your account
-                </p>
-              </label>
+          <div>
+            <div className="rounded-lg border border-border bg-muted/30 p-4">
+              <div className="flex items-center space-x-2">
+                <Key className="h-4 w-4" />
+                <span className="font-medium">Password Authentication</span>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Onboarding currently supports password-based admin accounts only.
+                You can switch to SSO later when the full SSO sign-in flow is available.
+              </p>
             </div>
-
-            <div className="flex items-start space-x-3 p-4 border rounded-lg hover:bg-muted/50 cursor-pointer">
-              <RadioGroupItem value="sso" id="sso" className="mt-1" />
-              <label htmlFor="sso" className="flex-1 cursor-pointer space-y-1">
-                <div className="flex items-center space-x-2">
-                  <Shield className="h-4 w-4" />
-                  <span className="font-medium">Enterprise SSO (SAML/OIDC)</span>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Connect your corporate identity provider for passwordless login
-                </p>
-              </label>
+          </div>
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+            <div className="flex items-center gap-2 font-medium">
+              <Shield className="h-4 w-4" />
+              SSO onboarding is not available yet
             </div>
-          </RadioGroup>
-        </div>
-
-        {data.authMethod === 'password' && (
+            <p className="mt-2">
+              We&apos;re keeping onboarding on password authentication for now so every new admin account can sign in immediately after setup.
+            </p>
+          </div>
           <div>
             <Label htmlFor="password">Password *</Label>
             <Input
@@ -264,43 +247,7 @@ export function Step2AccountCreation({ data, updateData }: Step2Props) {
               Must be at least 8 characters with uppercase, lowercase, and numbers
             </p>
           </div>
-        )}
-
-        {data.authMethod === 'sso' && (
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="ssoEmail">Corporate Email for SSO *</Label>
-              <Input
-                id="ssoEmail"
-                type="email"
-                placeholder="admin@company.com"
-                value={data.ssoEmail || ''}
-                onChange={(e) => updateData({ ssoEmail: e.target.value })}
-                className="mt-1"
-                required
-              />
-              <p className="text-sm text-muted-foreground mt-1">
-                You&apos;ll be redirected to your identity provider to complete setup
-              </p>
-            </div>
-            <div>
-              <Label htmlFor="ssoProvider">SSO Provider</Label>
-              <select
-                id="ssoProvider"
-                value={data.ssoProvider || ''}
-                onChange={(e) => updateData({ ssoProvider: e.target.value })}
-                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value="">Select provider (optional)</option>
-                {ssoProviders.map((provider) => (
-                  <option key={provider.value} value={provider.value}>
-                    {provider.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   )

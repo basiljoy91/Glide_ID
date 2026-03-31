@@ -13,6 +13,7 @@ export interface OnboardingData {
   companyName: string
   industry: string
   estimatedEmployees: number
+  planTier: 'starter' | 'professional' | 'enterprise'
 
   // Step 2: Account Creation
   adminEmail: string
@@ -30,13 +31,16 @@ export interface OnboardingData {
   // Step 3: Team Setup
   teamMembers: Array<{
     email: string
-    role: 'org_admin' | 'hr' | 'dept_manager'
+    role: 'org_admin' | 'hr'
   }>
 
   // Step 4: Provisioning (from backend)
   tenantId?: string
   kioskCode?: string
   adminUserId?: string
+  teamMembersProvisioned?: number
+  teamMemberInvitesSent?: boolean
+  warnings?: string[]
 }
 
 export function OnboardingWizard() {
@@ -45,6 +49,7 @@ export function OnboardingWizard() {
     companyName: '',
     industry: '',
     estimatedEmployees: 50,
+    planTier: 'starter',
     adminEmail: '',
     adminFirstName: '',
     adminLastName: '',
@@ -68,7 +73,7 @@ export function OnboardingWizard() {
   const handleNext = async () => {
     // Validate current step before proceeding
     if (currentStep === 1) {
-      if (!data.companyName || !data.industry) {
+      if (!data.companyName || !data.industry || !data.planTier || data.estimatedEmployees <= 0) {
         toast.error('Please fill in all required fields')
         return
       }
@@ -81,12 +86,12 @@ export function OnboardingWizard() {
         toast.error('Please verify the admin email address before continuing')
         return
       }
-      if (data.authMethod === 'password' && !data.password) {
-        toast.error('Please enter a password')
+      if (data.authMethod !== 'password') {
+        toast.error('Onboarding currently supports password-based admin accounts only')
         return
       }
-      if (data.authMethod === 'sso' && !data.ssoEmail) {
-        toast.error('Please enter your corporate email for SSO')
+      if (!data.password) {
+        toast.error('Please enter a password')
         return
       }
     }
@@ -100,6 +105,9 @@ export function OnboardingWizard() {
           tenantId: result.tenantId,
           kioskCode: result.kioskCode,
           adminUserId: result.adminUserId,
+          teamMembersProvisioned: result.teamMembersProvisioned || 0,
+          teamMemberInvitesSent: !!result.teamMemberInvitesSent,
+          warnings: Array.isArray(result.warnings) ? result.warnings : [],
         })
         toast.success('Organization provisioned successfully!', { id: 'provisioning' })
         setCurrentStep(4)
@@ -204,16 +212,15 @@ async function provisionOrganization(data: OnboardingData) {
         name: data.companyName,
         industry: data.industry,
         estimated_employees: data.estimatedEmployees,
+        plan_tier: data.planTier,
       },
       admin: {
         email: data.adminEmail,
         first_name: data.adminFirstName,
         last_name: data.adminLastName,
         phone: data.adminPhone,
-        auth_method: data.authMethod,
+        auth_method: 'password',
         password: data.password,
-        sso_email: data.ssoEmail,
-        sso_provider: data.ssoProvider,
       },
       team_members: data.teamMembers,
       email_verification_id: data.emailVerificationChallengeId,

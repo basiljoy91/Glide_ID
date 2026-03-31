@@ -213,6 +213,49 @@ func (s *AuthService) ConsumeEmailVerificationChallengeTx(ctx context.Context, s
 	return consumeEmailVerificationChallenge(ctx, store, challengeID, email, scope)
 }
 
+func (s *AuthService) CheckEmailVerificationRateLimit(ctx context.Context, email, scope string, cooldown, window time.Duration, maxChallenges int) (time.Duration, bool, error) {
+	if cooldown <= 0 {
+		cooldown = time.Minute
+	}
+	if window <= 0 {
+		window = time.Hour
+	}
+	if maxChallenges <= 0 {
+		maxChallenges = 5
+	}
+
+	var latestCreatedAt *time.Time
+	var recentCount int
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			MAX(created_at) FILTER (
+				WHERE consumed_at IS NULL
+				  AND expires_at > NOW()
+			) AS latest_created_at,
+			COUNT(*) FILTER (
+				WHERE created_at >= NOW() - ($3 || ' seconds')::interval
+				  AND consumed_at IS NULL
+			) AS recent_count
+		FROM email_verification_challenges
+		WHERE LOWER(email) = LOWER($1)
+		  AND scope = $2
+	`, email, scope, int(window.Seconds())).Scan(&latestCreatedAt, &recentCount)
+	if err != nil {
+		return 0, false, err
+	}
+
+	if recentCount >= maxChallenges {
+		return 0, true, nil
+	}
+	if latestCreatedAt != nil {
+		nextAllowedAt := latestCreatedAt.Add(cooldown)
+		if nextAllowedAt.After(time.Now().UTC()) {
+			return time.Until(nextAllowedAt), false, nil
+		}
+	}
+	return 0, false, nil
+}
+
 func createEmailVerificationChallenge(ctx context.Context, store emailChallengeStore, email, scope string, ttl time.Duration, ipAddress string) (uuid.UUID, string, time.Time, error) {
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
